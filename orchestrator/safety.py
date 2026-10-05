@@ -125,7 +125,13 @@ class ContentSafetyGate:
         client_credential: AzureKeyCredential | TokenCredential = (
             AzureKeyCredential(self._api_key) if self._api_key else credential
         )
-        self._text_client = text_client or ContentSafetyClient(self._endpoint, client_credential)
+        self._text_client = text_client or ContentSafetyClient(
+            self._endpoint,
+            client_credential,
+            connection_timeout=5,
+            read_timeout=self._timeout,
+            retry_total=2,
+        )
         self._token: Optional[AccessToken] = None
 
     # ------------------------------------------------------------------ #

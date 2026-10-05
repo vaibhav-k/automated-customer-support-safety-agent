@@ -1,7 +1,8 @@
 """Chunk, embed, and index ``data/contoso_policy.md`` into Azure AI Search.
 
 Creates (or updates) a vector + semantic index whose vector field is bound to an
-**Azure OpenAI vectorizer** using ``text-embedding-3-small`` (1536 dims). The
+**Azure OpenAI vectorizer** (``text-embedding-3-small`` at 1536 dims by default, or
+``text-embedding-3-large`` at up to 3072 dims). The
 integrated vectorizer is what lets the Foundry agent's Azure AI Search tool run
 ``vector_semantic_hybrid`` queries without the agent embedding anything itself.
 
@@ -45,10 +46,10 @@ from pathlib import Path
 
 from azure.core.credentials import AzureKeyCredential, TokenCredential
 from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
-from azure.identity import DefaultAzureCredential
 from azure.search.documents import SearchClient
 from azure.search.documents.indexes import SearchIndexClient
 
+from orchestrator.auth import make_credential
 from orchestrator.config import POLICY_PATH, ConfigError, Settings
 
 logger = logging.getLogger("contoso.ingest")
@@ -56,7 +57,7 @@ logger = logging.getLogger("contoso.ingest")
 MAX_CHUNK_CHARS = 1800
 OVERLAP_CHARS = 200
 EMBED_BATCH_SIZE = 16
-VECTORIZER_NAME = "aoai-text-embedding-3-small"
+VECTORIZER_NAME = "aoai-embedding"  # model-agnostic: the model is set by EMBEDDING_MODEL_NAME
 VECTOR_PROFILE_NAME = "hnsw-aoai-profile"
 HNSW_ALGORITHM_NAME = "hnsw-cosine"
 SEMANTIC_CONFIG_NAME = "contoso-semantic-config"
@@ -289,6 +290,35 @@ def build_index(
     )
 
 
+# Maximum output dimensions per embedding model (text-embedding-3 models can be shortened; ada-002 cannot).
+EMBEDDING_MAX_DIMENSIONS = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1536,
+}
+_FIXED_DIMENSION_MODELS = {"text-embedding-ada-002"}
+
+
+def validate_embedding_settings(deployment: str, model: str, dimensions: int) -> None:
+    """Catch the classic mismatches before anything is created or embedded. Raises ConfigError."""
+    max_dims = EMBEDDING_MAX_DIMENSIONS.get(model)
+    if max_dims is None:
+        logger.warning("Unknown EMBEDDING_MODEL_NAME %r; skipping dimension checks.", model)
+        return
+    if dimensions > max_dims or (model in _FIXED_DIMENSION_MODELS and dimensions != max_dims):
+        raise ConfigError(
+            f"EMBEDDING_DIMENSIONS={dimensions} is not valid for {model} (max {max_dims}). "
+            f"Set EMBEDDING_DIMENSIONS={max_dims} and re-run with --recreate."
+        )
+    for size in ("small", "large"):
+        other = "large" if size == "small" else "small"
+        if f"3-{size}" in deployment and f"3-{other}" in model:
+            raise ConfigError(
+                f"EMBEDDING_DEPLOYMENT_NAME={deployment!r} looks like text-embedding-3-{size} but "
+                f"EMBEDDING_MODEL_NAME={model!r}. Set both (and EMBEDDING_DIMENSIONS) for the same model."
+            )
+
+
 def embed_chunks(
     chunks: list[Chunk],
     aoai_endpoint: str,
@@ -420,7 +450,7 @@ def _ensure_index(index_client: SearchIndexClient, settings: Settings, recreate:
 def _ingest(settings: Settings, chunks: list[Chunk], recreate: bool) -> int:
     """Create/update the index, embed the chunks, and upload them. Returns a process exit code."""
     search_endpoint = settings.required_str("search_endpoint")
-    credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+    credential = make_credential()
     search_credential = _search_credential(settings, credential)
     index_client = SearchIndexClient(search_endpoint, search_credential)
     try:
@@ -476,6 +506,11 @@ def main(argv: list[str] | None = None) -> int:
             "search_index_name",
             "azure_openai_endpoint",
             "embedding_deployment_name",
+        )
+        validate_embedding_settings(
+            settings.embedding_deployment_name,
+            settings.embedding_model_name,
+            settings.embedding_dimensions,
         )
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)

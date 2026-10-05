@@ -89,8 +89,11 @@ az group create --name $RG --location $LOCATION
    **Resource Management → Projects** → `contoso-support` → **Identity** → *System assigned* = **On**.
    Copy its **Object (principal) ID** — you need it in Step 6.
 
-> **Exam note:** text-embedding-3-small produces **1536-dimensional** vectors by default. The index vector field
-> dimension **must** match the embedding output dimension or uploads fail.
+> **Exam note:** text-embedding-3-small produces **1536-dimensional** vectors; text-embedding-3-large produces
+> **3072** (both accept a shorter `dimensions` value; ada-002 is fixed at 1536). The index vector field dimension
+> **must** match the embedding output or uploads fail. If you deploy 3-large, set all three together in `.env`:
+> `EMBEDDING_DEPLOYMENT_NAME`, `EMBEDDING_MODEL_NAME=text-embedding-3-large`, `EMBEDDING_DIMENSIONS=3072` —
+> `ingest_policy.py` refuses mismatched combinations before creating anything.
 
 ## Step 4 — Azure AI Search
 
@@ -201,8 +204,8 @@ Role assignments can take **up to 10 minutes** to propagate. Run `az account get
 The script creates `contoso-policy-index` with:
 
 - Fields `id`, `title`, `section`, `content`, `source`, `url`, `chunk_index`, and `content_vector`
-  (`Collection(Edm.Single)`, **1536** dims, HNSW / cosine).
-- An **Azure OpenAI vectorizer** bound to `text-embedding-3-small` that authenticates with the **search service's
+  (`Collection(Edm.Single)`, `EMBEDDING_DIMENSIONS` dims — 1536 for 3-small, 3072 for 3-large — HNSW / cosine).
+- An **Azure OpenAI vectorizer** (`aoai-embedding`) bound to your embedding deployment that authenticates with the **search service's
   managed identity** (no API key) — this is what lets the agent issue *vector* and *hybrid* queries with plain text.
 - A **semantic configuration** (`title` / `content` / `section`) for the semantic ranker.
 
@@ -314,6 +317,7 @@ responses that the client never sees.
 | Self-harm | User input, Output | Block | **Medium** |
 | Protected material text | Output | Annotate and block | — |
 | Protected material code | Output | Annotate | — |
+| **Personally identifiable information (PII)** | Output | **Annotate and block** (or mask, if offered) | — |
 
 3. **Next** → **Step 2: Assign** → **Add models** → `gpt-4.1-mini`; after Step 12, return and **Add agents** →
    `contoso-support-agent` → **Save**.
@@ -392,7 +396,7 @@ Azure portal → **Azure AI Foundry** *(or **Microsoft Foundry**)* → **Manage 
 | `Missing required configuration: …` | `.env` incomplete | Fill the listed variables (see `.env.example`) |
 | `403` on document upload (`docs/search.index`) but the index was created | You have Search Service Contributor but not **Search Index Data Contributor**, and **Add role assignment** is greyed out for you | Ask an Owner to assign the role. Lab fallback: set `AZURE_SEARCH_API_KEY` (admin key) and optionally `AZURE_OPENAI_VECTORIZER_API_KEY` in `.env`, then re-run with `--recreate` (see Step 8) |
 | `403` from ingestion on `create_or_update_index` | Search still on **API keys** only, or role not propagated | Step 4.2 → **Both**; wait 10 min; check Step 6 rows 4–5 |
-| Uploads fail: *vector dimension mismatch* | `EMBEDDING_DIMENSIONS` ≠ field dimension | Keep 1536 for text-embedding-3-small, run with `--recreate` |
+| Uploads fail: *vector dimension mismatch* | `EMBEDDING_DIMENSIONS` ≠ field dimension | 1536 for 3-small, 3072 for 3-large; re-run with `--recreate` after any change |
 | Search explorer `text` vector query errors | Vectorizer cannot reach the embedding deployment | Step 6 row 8; check `AZURE_OPENAI_ENDPOINT` is the `*.openai.azure.com` endpoint |
 | Agent answers policy questions without citations | Index lacks retrievable `url`/`title`, or search tool failing | Inspect the trace; confirm Step 6 rows 6–7 |
 | OpenAPI tool returns 401 | Key name mismatch | Connection **Key** must be `x-functions-key` exactly |

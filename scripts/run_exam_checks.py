@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import sys
 from dataclasses import dataclass, field
@@ -230,13 +231,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--category", default=None, help="RAG | TOOL | COMBINED | FALLBACK | SAFETY")
     parser.add_argument("--report", type=Path, default=None, help="Write a JSON report to this path.")
     parser.add_argument("--cases", type=Path, default=CASES_PATH, help="Path to the cases JSON file.")
+    parser.add_argument(
+        "--skip-input-gate",
+        action="store_true",
+        help="Bypass the client-side Content Safety gate so attacks reach the Foundry guardrail (tests layer 1b).",
+    )
     args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.WARNING, format="  %(levelname)s %(name)s: %(message)s")
 
     from contextlib import ExitStack
 
-    from azure.identity import DefaultAzureCredential
-
     from orchestrator.__main__ import build_pipeline
+    from orchestrator.auth import make_credential
     from orchestrator.config import ConfigError, Settings
 
     only = {s.strip().upper() for s in args.only.split(",") if s.strip()}
@@ -249,9 +255,9 @@ def main(argv: list[str] | None = None) -> int:
     with ExitStack() as stack:
         try:
             settings = Settings.from_env()
-            credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+            credential = make_credential()
             stack.callback(credential.close)
-            pipeline, agent = build_pipeline(settings, credential, stack)
+            pipeline, agent = build_pipeline(settings, credential, stack, skip_input_gate=args.skip_input_gate)
         except (ConfigError, ValueError) as exc:
             print(f"Configuration error: {exc}", file=sys.stderr)
             return 2

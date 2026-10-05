@@ -170,3 +170,54 @@ def test_temperature_omitted_from_definition_when_unset():
         order_api_connection_id=None,
     )
     assert "temperature" not in definition.as_dict()
+
+
+@pytest.mark.parametrize(
+    "deployment,model,dims,ok",
+    [
+        ("text-embedding-3-small", "text-embedding-3-small", 1536, True),
+        ("text-embedding-3-large", "text-embedding-3-large", 3072, True),
+        (
+            "text-embedding-3-large",
+            "text-embedding-3-large",
+            1536,
+            True,
+        ),  # shortened vectors are allowed
+        ("text-embedding-3-small", "text-embedding-3-small", 3072, False),
+        (
+            "text-embedding-3-large",
+            "text-embedding-3-small",
+            1536,
+            False,
+        ),  # deployment/model mismatch
+        ("ada", "text-embedding-ada-002", 1024, False),
+        (
+            "my-custom",
+            "some-future-model",
+            4096,
+            True,
+        ),  # unknown models are not blocked
+    ],
+)
+def test_validate_embedding_settings(deployment, model, dims, ok):
+    from orchestrator.config import ConfigError
+    from scripts.ingest_policy import validate_embedding_settings
+
+    if ok:
+        validate_embedding_settings(deployment, model, dims)
+    else:
+        with pytest.raises(ConfigError):
+            validate_embedding_settings(deployment, model, dims)
+
+
+def test_credential_factory_raises_cli_timeout():
+    from azure.identity import AzureCliCredential
+
+    from orchestrator.auth import CLI_PROCESS_TIMEOUT_SECONDS, make_credential
+
+    credential = make_credential()
+    try:
+        cli = [c for c in credential.credentials if isinstance(c, AzureCliCredential)]
+        assert cli and getattr(cli[0], "_process_timeout", None) == CLI_PROCESS_TIMEOUT_SECONDS
+    finally:
+        credential.close()

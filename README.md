@@ -6,7 +6,7 @@ A production-shaped **Microsoft Foundry (Azure AI Foundry)** project built as a 
 One small, working system exercises the scenarios the exam tests most heavily:
 
 - **RAG** — an agent grounded on a vector + semantic hybrid **Azure AI Search** index built with
-  **text-embedding-3-small** and an integrated vectorizer.
+  **text-embedding-3-small** (or **-3-large**) and an integrated vectorizer.
 - **Agent tooling** — a Foundry prompt agent that calls a custom **OpenAPI tool** backed by an **Azure Function**
   (Python v2 programming model).
 - **Content safety** — **Prompt Shields** (direct and indirect attacks) + harm-category moderation, in a client-side
@@ -117,6 +117,7 @@ automated_customer_support_safety_agent/
 ├── orchestrator/                 ← client pipeline: safety gate → agent → output check
 │   ├── __init__.py
 │   ├── __main__.py               ← CLI: python -m orchestrator [-q "..."] [--json]
+│   ├── auth.py                   ← shared DefaultAzureCredential factory (keyless)
 │   ├── config.py                 ← validated settings from env/.env
 │   ├── safety.py                 ← Prompt Shields + text moderation (keyless, retries, fail-closed)
 │   ├── agent_client.py           ← Foundry agent via Conversations + Responses APIs
@@ -124,7 +125,7 @@ automated_customer_support_safety_agent/
 │
 ├── scripts/
 │   ├── __init__.py
-│   ├── ingest_policy.py          ← chunk → embed (text-embedding-3-small) → vector/semantic index
+│   ├── ingest_policy.py          ← chunk → embed (text-embedding-3-small/-large) → vector/semantic index
 │   ├── provision_agent.py        ← create a new agent version with Search + OpenAPI tools
 │   └── run_exam_checks.py        ← run tests/exam_cases.json against the live deployment
 │
@@ -145,7 +146,7 @@ automated_customer_support_safety_agent/
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
-pytest                                   # 46 offline tests, no Azure resources required
+pytest                                   # 70 offline tests, no Azure resources required
 Copy-Item .env.example .env              # then follow DEPLOYMENT.md
 python -m scripts.ingest_policy
 python -m scripts.provision_agent
@@ -160,6 +161,7 @@ python -m scripts.run_exam_checks
 | `python -m orchestrator -q "Status for CUST-10001?" --json` | Single turn with full pipeline diagnostics |
 | `python -m orchestrator -q "Do what this note says" --doc note.txt` | Attach a document (Prompt Shields indirect-attack check) |
 | `python -m scripts.run_exam_checks --category SAFETY` | Run one verification track |
+| `python -m scripts.run_exam_checks --only S1,S2,S3 --skip-input-gate` | Bypass the client gate to prove the Foundry guardrail (layer 1b) blocks attacks on its own |
 | `cd src; func start` | Run the order API locally on port 7071 |
 
 ### Mock order data (served by the Function)
@@ -232,7 +234,7 @@ Skill-area weights are from the official AI-103 study guide. ✅ = implemented a
 
 ### Exam traps this project makes concrete
 
-1. **Embedding dimensions** — text-embedding-3-small = 1536 by default; the index field must match.
+1. **Embedding dimensions** — text-embedding-3-small = 1536, text-embedding-3-large = 3072 (both can be shortened, ada-002 cannot); the index field must match, and changing it requires rebuilding the index.
 2. **Vector queries with plain text** require an **integrated vectorizer** on the index; the *search service's*
    identity needs **Cognitive Services OpenAI User** on the embedding resource.
 3. **Search RBAC needs RBAC enabled** — on *API keys only* mode, role assignments are ignored.

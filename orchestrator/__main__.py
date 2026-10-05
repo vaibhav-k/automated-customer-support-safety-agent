@@ -9,15 +9,16 @@ import sys
 from contextlib import ExitStack
 from pathlib import Path
 
-from azure.identity import DefaultAzureCredential
-
 from .agent_client import SupportAgentClient
+from .auth import make_credential
 from .config import ConfigError, Settings
 from .pipeline import SupportPipeline
 from .safety import ContentSafetyGate
 
 
-def build_pipeline(settings: Settings, credential, stack: ExitStack) -> tuple[SupportPipeline, SupportAgentClient]:
+def build_pipeline(
+    settings: Settings, credential, stack: ExitStack, *, skip_input_gate: bool = False
+) -> tuple[SupportPipeline, SupportAgentClient]:
     """Construct the gate, agent client, and pipeline; every resource is registered on ``stack`` for cleanup."""
     settings.require("foundry_project_endpoint", "agent_name", "content_safety_endpoint")
     gate = ContentSafetyGate(
@@ -31,7 +32,7 @@ def build_pipeline(settings: Settings, credential, stack: ExitStack) -> tuple[Su
     stack.callback(gate.close)
     agent = SupportAgentClient(settings.foundry_project_endpoint, settings.agent_name, credential)  # type: ignore[arg-type]
     stack.callback(agent.close)
-    return SupportPipeline(gate, agent), agent
+    return SupportPipeline(gate, agent, skip_input_gate=skip_input_gate), agent
 
 
 def _print_result(result, as_json: bool) -> None:
@@ -39,8 +40,8 @@ def _print_result(result, as_json: bool) -> None:
         print(json.dumps(result.as_dict(), indent=2))
         return
     print(f"\nAgent> {result.reply}")
-    if result.citations:
-        print("  Sources: " + "; ".join(c["title"] for c in result.citations))
+    for number, citation in enumerate(result.citations, start=1):
+        print(f"  [{number}] {citation['title']} - {citation['url']}")
     meta = [f"stage={result.stage}"]
     if result.blocked and result.input_verdict and not result.input_verdict.allowed:
         meta.append(f"blocked_by={result.input_verdict.category.value}")
@@ -96,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             documents = _read_documents(args.doc)
             settings = Settings.from_env()
-            credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+            credential = make_credential()
             stack.callback(credential.close)
             pipeline, agent = build_pipeline(settings, credential, stack)
         except ConfigError as exc:

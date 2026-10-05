@@ -78,14 +78,28 @@ class PipelineResult:
 
 
 class SupportPipeline:
-    def __init__(self, gate: SafetyGate, agent: Agent, *, check_output: bool = True) -> None:
+    def __init__(
+        self,
+        gate: SafetyGate,
+        agent: Agent,
+        *,
+        check_output: bool = True,
+        skip_input_gate: bool = False,
+    ) -> None:
         self._gate = gate
         self._agent = agent
         self._check_output = check_output
+        # Test mode only: lets attacks reach the Foundry guardrail so layer 1b can be verified on its own.
+        self._skip_input_gate = skip_input_gate
+        if skip_input_gate:
+            logger.warning("Client-side input safety gate is DISABLED (test mode). Never use this in production.")
 
     def handle(self, conversation_id: str, user_text: str, documents: Sequence[str] = ()) -> PipelineResult:
         # 1) Input safety: Prompt Shields + harm categories. Blocked input never reaches the agent.
-        input_verdict = self._gate.check_user_input(user_text, documents)
+        if self._skip_input_gate:
+            input_verdict = SafetyVerdict(True, SafetyCategory.SAFE, "input gate skipped (test mode)")
+        else:
+            input_verdict = self._gate.check_user_input(user_text, documents)
         if not input_verdict.allowed:
             logger.warning(
                 "Input blocked: %s (%s)",

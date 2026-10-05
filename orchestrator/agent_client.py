@@ -18,6 +18,7 @@ role on the Foundry project (or resource).
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -27,6 +28,8 @@ from azure.core.exceptions import AzureError
 from openai import APIError, OpenAI
 
 logger = logging.getLogger("contoso.agent")
+
+AGENT_TIMEOUT_SECONDS = 120.0
 
 
 class AgentInvocationError(RuntimeError):
@@ -126,13 +129,39 @@ def _raise_for_status(response: Any) -> None:
         logger.warning("Agent response incomplete: %s", reason)
 
 
-def _url_citations(part: Any) -> list[Citation]:
-    citations = []
+# Raw citation markers emitted by the Azure AI Search tool, e.g. "【4:0†source】".
+_CITATION_MARKER_RE = re.compile(r"\s?【[^】]*】")
+
+
+class _CitationRegistry:
+    """Numbers unique source URLs in order of first appearance across the whole reply."""
+
+    def __init__(self) -> None:
+        self._numbers: dict[str, int] = {}
+        self.citations: list[Citation] = []
+
+    def number_for(self, url: str, title: str) -> int:
+        if url not in self._numbers:
+            self.citations.append(Citation(title=title or url, url=url))
+            self._numbers[url] = len(self.citations)
+        return self._numbers[url]
+
+
+def _render_citations(part: Any, registry: _CitationRegistry) -> str:
+    """Replace 【…】 markers with [n] (via annotation offsets when present) and register their sources."""
+    text: str = _get(part, "text", "") or ""
+    spans: list[tuple[int, int, int]] = []
     for annotation in _get(part, "annotations", []) or []:
         url = _get(annotation, "url", "") or ""
-        if _get(annotation, "type") == "url_citation" and url:
-            citations.append(Citation(title=_get(annotation, "title", "") or url, url=url))
-    return citations
+        if _get(annotation, "type") != "url_citation" or not url:
+            continue
+        number = registry.number_for(url, _get(annotation, "title", "") or "")
+        start, end = _get(annotation, "start_index"), _get(annotation, "end_index")
+        if isinstance(start, int) and isinstance(end, int) and 0 <= start < end <= len(text):
+            spans.append((start, end, number))
+    for start, end, number in sorted(spans, reverse=True):  # right-to-left keeps earlier offsets valid
+        text = f"{text[:start]} [{number}]{text[end:]}"
+    return _CITATION_MARKER_RE.sub("", text).replace("  [", " [").strip()
 
 
 def _message_parts(item: Any) -> list[Any]:
@@ -153,13 +182,6 @@ def _usage(response: Any) -> dict[str, int]:
     return {key: value for key, value in values.items() if isinstance(value, int)}
 
 
-def _dedupe(citations: list[Citation]) -> list[Citation]:
-    unique: dict[str, Citation] = {}
-    for citation in citations:
-        unique.setdefault(citation.url, citation)
-    return list(unique.values())
-
-
 def parse_response(response: Any) -> AgentReply:
     """Convert an OpenAI ``Response`` object into an :class:`AgentReply`.
 
@@ -168,25 +190,24 @@ def parse_response(response: Any) -> AgentReply:
     _raise_for_status(response)
 
     texts: list[str] = []
-    citations: list[Citation] = []
+    registry = _CitationRegistry()
     tool_calls: list[str] = []
     for item in _get(response, "output", []) or []:
         item_type = _get(item, "type", "")
         if item_type == "message":
-            for part in _message_parts(item):
-                texts.append(_get(part, "text", "") or "")
-                citations.extend(_url_citations(part))
+            texts.extend(_render_citations(part, registry) for part in _message_parts(item))
         elif item_type and item_type != "reasoning":
             tool_calls.append(_tool_call_label(item))
 
-    text = "\n".join(t for t in texts if t).strip() or (_get(response, "output_text", "") or "").strip()
+    fallback = _CITATION_MARKER_RE.sub("", _get(response, "output_text", "") or "")
+    text = "\n".join(t for t in texts if t).strip() or fallback.strip()
     if not text:
         raise AgentInvocationError("Agent returned no text output.")
 
     return AgentReply(
         text=text,
         response_id=_get(response, "id", "") or "",
-        citations=_dedupe(citations),
+        citations=registry.citations,
         tool_calls=tool_calls,
         usage=_usage(response),
     )
@@ -211,7 +232,9 @@ class SupportAgentClient:
         self._project: Optional[AIProjectClient] = None
         if openai_client is None:
             self._project = AIProjectClient(endpoint=project_endpoint, credential=credential)
-            openai_client = self._project.get_openai_client()
+            # Bounded waits: the openai defaults (600 s, 2 retries) can block ~30 min and a retried
+            # responses.create after a read timeout may append the user's turn to the conversation twice.
+            openai_client = self._project.get_openai_client(timeout=AGENT_TIMEOUT_SECONDS, max_retries=1)
         self._openai = openai_client
 
     @property

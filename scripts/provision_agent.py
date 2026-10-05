@@ -36,8 +36,8 @@ from azure.core.exceptions import (
     HttpResponseError,
     ResourceNotFoundError,
 )
-from azure.identity import DefaultAzureCredential
 
+from orchestrator.auth import make_credential
 from orchestrator.config import (
     OPENAPI_SPEC_PATH,
     SYSTEM_PROMPT_PATH,
@@ -253,7 +253,7 @@ def _resolve_connections(project: AIProjectClient, inputs: _Inputs) -> tuple[str
 
 def _provision(inputs: _Inputs) -> int:
     endpoint = inputs.settings.required_str("foundry_project_endpoint")
-    credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+    credential = make_credential()
     project = AIProjectClient(endpoint=endpoint, credential=credential)
     try:
         search_id, order_id = _resolve_connections(project, inputs)
