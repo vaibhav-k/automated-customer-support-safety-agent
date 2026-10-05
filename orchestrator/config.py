@@ -42,6 +42,13 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return value
 
 
+def _env_optional_bool(name: str) -> Optional[bool]:
+    """Like _env_bool, but unset/empty means "not specified" (None)."""
+    if _env(name) is None:
+        return None
+    return _env_bool(name, False)
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = _env(name)
     if raw is None:
@@ -101,6 +108,10 @@ class Settings:
     order_api_base_url: Optional[str]
     order_api_connection_name: Optional[str]
 
+    # Evaluation judges (scripts/evaluate_quality.py)
+    eval_model_deployment_name: Optional[str]
+    eval_is_reasoning_model: Optional[bool]  # None = auto-detect from the deployment name
+
     @classmethod
     def from_env(cls, env_file: Optional[Path] = None) -> Settings:
         load_dotenv(env_file or REPO_ROOT / ".env", override=False)
@@ -129,6 +140,8 @@ class Settings:
             policy_base_url=_env("POLICY_BASE_URL", "https://policies.contoso.example/contoso_policy.md"),  # type: ignore[arg-type]
             order_api_base_url=_env("ORDER_API_BASE_URL"),
             order_api_connection_name=_env("ORDER_API_CONNECTION_NAME"),
+            eval_model_deployment_name=_env("EVAL_MODEL_DEPLOYMENT_NAME"),
+            eval_is_reasoning_model=_env_optional_bool("EVAL_IS_REASONING_MODEL"),
         )
 
     def __repr__(self) -> str:  # never print secrets in logs/tracebacks

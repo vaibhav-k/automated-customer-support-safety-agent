@@ -1,0 +1,4 @@
+# Optional: AI-assisted quality evaluation (scripts/evaluate_quality.py). Heavy (pandas, nltk), so kept
+# separate from requirements.txt. Not needed for --offline mode.
+-r requirements.txt
+azure-ai-evaluation==1.18.7

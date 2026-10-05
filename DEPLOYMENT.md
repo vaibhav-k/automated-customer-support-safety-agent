@@ -369,6 +369,20 @@ python -m scripts.run_exam_checks --report exam_report.json
 
 Then complete the sign-off table in `tests/exam_verification.md`.
 
+**Quality evaluation (groundedness, relevance, fabrication):** score the replies captured above without calling
+the agent again.
+
+```powershell
+pip install -r requirements-eval.txt                # once: azure-ai-evaluation (pulls in pandas, nltk)
+python -m scripts.evaluate_quality --offline        # deterministic fabricated-fact check only
+python -m scripts.evaluate_quality                  # + GroundednessEvaluator and RelevanceEvaluator (1-5)
+```
+
+The AI judges call a chat deployment (`EVAL_MODEL_DEPLOYMENT_NAME`, default `FOUNDRY_MODEL_DEPLOYMENT_NAME`) on
+`AZURE_OPENAI_ENDPOINT` with your Entra ID, so you need **Cognitive Services OpenAI User** on the Foundry resource
+(Step 6 row 2). Reasoning-model judges (o-series, gpt-5, `*-chat-latest`) are detected from the name; override with
+`EVAL_IS_REASONING_MODEL`. Results go to `evaluation_report.json` (git-ignored).
+
 **Observability (recommended):** Foundry portal → **Operate** *(classic: **Tracing**)* → connect the
 Application Insights resource created in Step 9. Agent runs then show per-step traces (model call, search call,
 OpenAPI call), token counts, and latency; guardrail detections appear as annotations.

@@ -174,6 +174,40 @@ policies".* Run these once, then restore the configuration.
 
 ---
 
+## 7b. Track G — Quality evaluation
+
+*AI-103: "Evaluate models and apps, including detecting fabrications, relevance, quality, and safety".*
+
+Run after a full `run_exam_checks --report exam_report.json`:
+
+```powershell
+python -m scripts.evaluate_quality            # add --offline to skip the AI judges
+```
+
+| Check | Applies to | Pass |
+|---|---|---|
+| Fabricated facts (deterministic) | Every answered case that used a tool | Every `$`/`€`/`AUD` amount, `%`, `POL-…`, `CON-…`, `CUST-…` and tracking number in the reply appears in the policy handbook, the order record, or the question |
+| Groundedness (`GroundednessEvaluator`, 1–5) | Cases with tool context | ≥ 3 |
+| Relevance (`RelevanceEvaluator`, 1–5) | Every answered case | ≥ 3 |
+
+Blocked cases (S1–S4) are skipped. Clarifying questions and refusals (T2, T3, F2, S5) have no context and are scored
+for relevance only. For cases tagged `"expected_behaviour": "refuse"` (F2, S5) or `"clarify"` (T2, T3) in `exam_cases.json`, a low
+relevance score is reported but **not** gated: `RelevanceEvaluator` rewards answering the question, so a correct
+refusal or clarifying question scores 1–3 by design — and the score varies between runs (T3 has scored both 3 and 2).
+
+> **Exam note:** AI-assisted judges are **non-deterministic** — scores near the threshold flip between runs. Gate
+> on deterministic checks where you can, and average several runs (or use a lower-variance judge) for borderline
+> metrics.
+>
+> **Exam note:** pick metrics that match the intended behaviour. Relevance and groundedness measure *answer
+> quality*; for safety refusals use task-adherence or the risk & safety evaluators instead, otherwise the metric
+> rewards a jailbroken agent that "helpfully" answers.
+>
+> **Exam note:** AI-assisted evaluators (groundedness, relevance, coherence, fluency) need a **judge model
+> deployment**; risk & safety evaluators (violence, indirect attack, protected material) run on the **Foundry project's
+> safety service** instead. Deterministic checks such as this fabricated-fact test cost nothing and catch the most
+> damaging failure — confidently wrong numbers.
+
 ## 8. Sign-off
 
 | Track | MUST cases | Passed | Notes |
@@ -184,6 +218,7 @@ policies".* Run these once, then restore the configuration.
 | D — Multistep | C1 | ☐ | |
 | E — Safety | S1–S6 | ☐ | Record the blocking layer for S1–S5 |
 | F — Security/RBAC | X1–X3, X5 | ☐ | |
+| G — Quality evaluation | All answered cases | ☐ | Groundedness and relevance ≥ 3, no unsupported facts |
 
 **Accepted when every MUST row is ticked.** Keep `exam_report.json` with your study notes — reviewing *why* a
 case was blocked at layer 1 vs. layer 1b is excellent exam practice.

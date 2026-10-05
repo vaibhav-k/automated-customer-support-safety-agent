@@ -31,6 +31,7 @@ Thumbs.db
 
 # Exam run reports
 exam_report*.json
+evaluation_report*.json
 
 # Azure variables / local secrets
 azvars.ps1

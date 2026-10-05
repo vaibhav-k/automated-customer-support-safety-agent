@@ -99,6 +99,7 @@ automated_customer_support_safety_agent/
 ├── pyproject.toml                ← pytest + ruff configuration
 ├── requirements.txt              ← orchestrator + scripts dependencies
 ├── requirements-dev.txt          ← + test/lint tooling + function deps
+├── requirements-eval.txt         ← optional: azure-ai-evaluation for the AI judges
 │
 ├── agent/                        ← agent & tool assets (provisioned by scripts/provision_agent.py)
 │   ├── system_prompt.txt         ← persona, tool rules, grounding rules, fallbacks, guardrails
@@ -127,7 +128,8 @@ automated_customer_support_safety_agent/
 │   ├── __init__.py
 │   ├── ingest_policy.py          ← chunk → embed (text-embedding-3-small/-large) → vector/semantic index
 │   ├── provision_agent.py        ← create a new agent version with Search + OpenAPI tools
-│   └── run_exam_checks.py        ← run tests/exam_cases.json against the live deployment
+│   ├── run_exam_checks.py        ← run tests/exam_cases.json against the live deployment
+│   └── evaluate_quality.py       ← groundedness / relevance judges + fabrication check on the replies
 │
 └── tests/
     ├── exam_verification.md      ← strict AI-103 acceptance script (RAG, tools, safety, RBAC)
@@ -146,7 +148,7 @@ automated_customer_support_safety_agent/
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
-pytest                                   # 70 offline tests, no Azure resources required
+pytest                                   # 81 offline tests, no Azure resources required
 Copy-Item .env.example .env              # then follow DEPLOYMENT.md
 python -m scripts.ingest_policy
 python -m scripts.provision_agent
@@ -161,6 +163,8 @@ python -m scripts.run_exam_checks
 | `python -m orchestrator -q "Status for CUST-10001?" --json` | Single turn with full pipeline diagnostics |
 | `python -m orchestrator -q "Do what this note says" --doc note.txt` | Attach a document (Prompt Shields indirect-attack check) |
 | `python -m scripts.run_exam_checks --category SAFETY` | Run one verification track |
+| `python -m scripts.evaluate_quality --offline` | Fabricated-fact check on the last `exam_report.json` (no Azure calls) |
+| `python -m scripts.evaluate_quality` | + groundedness and relevance AI judges (`pip install -r requirements-eval.txt`) |
 | `python -m scripts.run_exam_checks --only S1,S2,S3 --skip-input-gate` | Bypass the client gate to prove the Foundry guardrail (layer 1b) blocks attacks on its own |
 | `cd src; func start` | Run the order API locally on port 7071 |
 
@@ -205,7 +209,7 @@ Skill-area weights are from the official AI-103 study guide. ✅ = implemented a
 |---|---|---|
 | ✅ Implement RAG in an application | Search tool + `system_prompt.txt` grounding rules | Retrieval → grounding → citation; fallback when nothing is retrieved |
 | ✅ Design tool-augmented flows and multistep reasoning | Test C1/C2 | Order tool result feeds a policy lookup |
-| ✅ Evaluate apps, including detecting fabrications and safety | `run_exam_checks.py`, `exam_cases.json` | Assertion-based evals; grounding evidence; fallback cases F1/F2 |
+| ✅ Evaluate apps, including detecting fabrications and safety | `run_exam_checks.py`, `evaluate_quality.py` | Assertion-based evals; `GroundednessEvaluator` / `RelevanceEvaluator` (1-5, AI-assisted) vs. a deterministic fabricated-fact check; fallback cases F1/F2 |
 | ✅ Integrate generative workflows with Foundry SDKs; connect an app to a Foundry project | `agent_client.py` | `AIProjectClient(endpoint, credential)` → `get_openai_client()` |
 | ✅ Define agent roles, goals, conversation tracking, tool schemas | `system_prompt.txt`, `openapi_spec.json` | Persona + scope; `operationId`; descriptions drive tool selection |
 | ✅ Build agents integrating retrieval, function-calling, and memory | `provision_agent.py` | `PromptAgentDefinition(tools=[AzureAISearchTool, OpenApiTool])` |
