@@ -112,6 +112,11 @@ class Settings:
     eval_model_deployment_name: Optional[str]
     eval_is_reasoning_model: Optional[bool]  # None = auto-detect from the deployment name
 
+    # Tracing (orchestrator/telemetry.py)
+    tracing_mode: Optional[str]  # off | console | azure_monitor (parsed by telemetry.TracingMode)
+    applicationinsights_connection_string: Optional[str]  # empty = read from the Foundry project
+    trace_capture_content: bool  # record prompts/replies in spans (may contain personal data)
+
     @classmethod
     def from_env(cls, env_file: Optional[Path] = None) -> Settings:
         load_dotenv(env_file or REPO_ROOT / ".env", override=False)
@@ -142,11 +147,14 @@ class Settings:
             order_api_connection_name=_env("ORDER_API_CONNECTION_NAME"),
             eval_model_deployment_name=_env("EVAL_MODEL_DEPLOYMENT_NAME"),
             eval_is_reasoning_model=_env_optional_bool("EVAL_IS_REASONING_MODEL"),
+            tracing_mode=_env("TRACING_MODE"),
+            applicationinsights_connection_string=_env("APPLICATIONINSIGHTS_CONNECTION_STRING"),
+            trace_capture_content=_env_bool("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", False),
         )
 
     def __repr__(self) -> str:  # never print secrets in logs/tracebacks
         masked = {
-            f.name: ("***" if f.name.endswith("api_key") and getattr(self, f.name) else getattr(self, f.name))
+            f.name: ("***" if f.name.endswith(_SECRET_SUFFIXES) and getattr(self, f.name) else getattr(self, f.name))
             for f in fields(self)
         }
         return f"Settings({masked})"
@@ -176,10 +184,14 @@ class Settings:
             )
 
 
+# Fields whose values are secrets (API keys; App Insights connection strings embed the ingestion key).
+_SECRET_SUFFIXES = ("api_key", "connection_string")
+
 # Attribute names that differ from their environment variable names.
 _ENV_NAME_OVERRIDES = {
     "MODEL_DEPLOYMENT_NAME": "FOUNDRY_MODEL_DEPLOYMENT_NAME",
     "SEARCH_ENDPOINT": "AZURE_SEARCH_ENDPOINT",
     "SEARCH_INDEX_NAME": "AZURE_SEARCH_INDEX_NAME",
     "SEARCH_CONNECTION_NAME": "AZURE_SEARCH_CONNECTION_NAME",
+    "TRACE_CAPTURE_CONTENT": "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
 }

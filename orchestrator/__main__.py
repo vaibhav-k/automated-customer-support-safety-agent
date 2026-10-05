@@ -14,10 +14,25 @@ from .auth import make_credential
 from .config import ConfigError, Settings
 from .pipeline import SupportPipeline
 from .safety import ContentSafetyGate
+from .telemetry import TracingHandle, TracingMode, configure_from_settings
+
+TRACE_CHOICES = [mode.value for mode in TracingMode]
+
+
+def setup_tracing(settings: Settings, credential, stack: ExitStack, mode_override: str | None) -> TracingHandle:
+    """Configure tracing (before any client exists) and flush it on exit."""
+    handle = configure_from_settings(settings, credential, mode_override=mode_override)
+    stack.callback(handle.shutdown)
+    return handle
 
 
 def build_pipeline(
-    settings: Settings, credential, stack: ExitStack, *, skip_input_gate: bool = False
+    settings: Settings,
+    credential,
+    stack: ExitStack,
+    *,
+    skip_input_gate: bool = False,
+    tracing: TracingHandle | None = None,
 ) -> tuple[SupportPipeline, SupportAgentClient]:
     """Construct the gate, agent client, and pipeline; every resource is registered on ``stack`` for cleanup."""
     settings.require("foundry_project_endpoint", "agent_name", "content_safety_endpoint")
@@ -30,7 +45,12 @@ def build_pipeline(
         api_key=settings.content_safety_api_key,
     )
     stack.callback(gate.close)
-    agent = SupportAgentClient(settings.foundry_project_endpoint, settings.agent_name, credential)  # type: ignore[arg-type]
+    agent = SupportAgentClient(
+        settings.foundry_project_endpoint,  # type: ignore[arg-type]
+        settings.agent_name,
+        credential,
+        resolve_agent_id=bool(tracing and tracing.enabled),
+    )
     stack.callback(agent.close)
     return SupportPipeline(gate, agent, skip_input_gate=skip_input_gate), agent
 
@@ -47,6 +67,8 @@ def _print_result(result, as_json: bool) -> None:
         meta.append(f"blocked_by={result.input_verdict.category.value}")
     if result.tool_calls:
         meta.append("tools=" + ",".join(result.tool_calls))
+    if result.trace_id:
+        meta.append(f"trace={result.trace_id}")
     print("  [" + " ".join(meta) + "]\n")
 
 
@@ -82,6 +104,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also log Azure SDK / HTTP / credential details (very noisy).",
     )
+    parser.add_argument(
+        "--trace",
+        choices=TRACE_CHOICES,
+        default=None,
+        help="OpenTelemetry tracing: console (span tree on stderr) or azure_monitor (Application Insights / "
+        "Foundry Tracing). Overrides TRACING_MODE.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -99,7 +128,8 @@ def main(argv: list[str] | None = None) -> int:
             settings = Settings.from_env()
             credential = make_credential()
             stack.callback(credential.close)
-            pipeline, agent = build_pipeline(settings, credential, stack)
+            tracing = setup_tracing(settings, credential, stack, args.trace)
+            pipeline, agent = build_pipeline(settings, credential, stack, tracing=tracing)
         except ConfigError as exc:
             print(f"Configuration error: {exc}", file=sys.stderr)
             return 2

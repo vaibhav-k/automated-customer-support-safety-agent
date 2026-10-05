@@ -141,6 +141,7 @@ This is the most-tested part of the build. Assign **exactly** these roles.
 | 6 | **Foundry project managed identity** | **Search Index Data Reader** | AI Search service | Agent's Azure AI Search tool queries the index (least privilege) |
 | 7 | **Foundry project managed identity** | **Search Service Contributor** | AI Search service | Lets the tool read the index schema/vectorizer (listed by current Foundry docs) |
 | 8 | **AI Search system-assigned managed identity** | **Cognitive Services OpenAI User** | Foundry resource | Integrated vectorizer embeds queries at runtime |
+| 9 | **You** *(optional, tracing)* | **Log Analytics Reader** | Application Insights resource | Read traces in Foundry **Tracing** and App Insights (Step 13.1) |
 
 > **About row 6:** *Search Index Data Reader* is the least-privilege, read-only data-plane role and is the answer
 > to "the agent only needs to query the index" exam questions. The current Foundry Azure AI Search tool doc lists
@@ -383,9 +384,64 @@ The AI judges call a chat deployment (`EVAL_MODEL_DEPLOYMENT_NAME`, default `FOU
 (Step 6 row 2). Reasoning-model judges (o-series, gpt-5, `*-chat-latest`) are detected from the name; override with
 `EVAL_IS_REASONING_MODEL`. Results go to `evaluation_report.json` (git-ignored).
 
-**Observability (recommended):** Foundry portal → **Operate** *(classic: **Tracing**)* → connect the
-Application Insights resource created in Step 9. Agent runs then show per-step traces (model call, search call,
-OpenAPI call), token counts, and latency; guardrail detections appear as annotations.
+### 13.1 Tracing with Application Insights
+
+The orchestrator emits OpenTelemetry traces (`orchestrator/telemetry.py`). One trace per customer turn:
+
+```
+contoso.pipeline.turn            stage, blocked, tools, citations, response id
+├── contoso.safety.input         Prompt Shields + harm categories verdict
+├── invoke_agent contoso-support-agent   gen_ai.* attributes: model, token usage, tool calls
+└── contoso.safety.output        output moderation verdict
+```
+
+The agent span comes from `AIProjectInstrumentor` (azure-ai-projects, **preview**): it instruments the
+Conversations and Responses calls and propagates the W3C trace context to the Agent Service, so the server-side
+steps (model, Azure AI Search, OpenAPI calls) join the same trace in the portal.
+
+**1. Try it locally first (no Azure resources):**
+
+```powershell
+python -m orchestrator --trace console -q "What's the return window for a laptop with Contoso Plus?"
+```
+
+A span tree with durations and token counts prints to stderr.
+
+**2. Connect Application Insights to the project:** Foundry portal → your project → **Tracing**
+*(new portal: **Operate** → **Tracing**)* → **Connect** → choose the Application Insights resource created with the
+Function App in Step 9 (or **Create new**) → **Connect**. Needs **Contributor** (or Owner) on the Foundry project.
+
+**3. Export traces:**
+
+```powershell
+python -m orchestrator --trace azure_monitor -q "Status for CUST-10001?"
+python -m scripts.run_exam_checks --trace azure_monitor     # one trace per case; failing cases print their trace id
+```
+
+Or set `TRACING_MODE=azure_monitor` in `.env`. The client reads the connection string from the project
+(`project.telemetry.get_application_insights_connection_string()`). If that fails with 403 (your role cannot read
+connection secrets), copy **Application Insights → Overview → Connection String** into
+`APPLICATIONINSIGHTS_CONNECTION_STRING` (it embeds the ingestion key, so treat it as a secret).
+
+**4. View them** (allow 2–5 minutes):
+
+- **Foundry portal → Tracing**: per-run view of model calls, tool calls, tokens and latency. The CLI sends the
+  agent version id in `agent_reference` when tracing is on, which links traces to the agent.
+- **Application Insights → Transaction search**: paste the `trace=` id the CLI prints (it is the `operation_Id`).
+- **Application Insights → Logs**: run the KQL in [`monitoring/app_insights_queries.kql`](monitoring/app_insights_queries.kql)
+  (turn outcomes, block rate by layer, p95 latency, token usage, tool mix, failing exam cases).
+- Viewing needs **Log Analytics Reader** on the Application Insights resource (or its workspace) — Step 6 row 9.
+
+**Message content is not recorded by default** (prompts and replies can hold personal data). For a debugging
+session only, set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`; the CLI warns while it is on.
+
+> **Exam notes:** tracing is client-side OpenTelemetry exported to **Application Insights**; the Foundry portal
+> reads the *connected* Application Insights resource. Content recording is opt-in. Content-filter blocks show up
+> as span events (`contoso.content_filter_block`) and as `stage=model_content_filter`, separate from client-side
+> Prompt Shields blocks (`stage=input_safety`), so you can tell which layer stopped an attack.
+
+The Function App already sends its own request logs to the same Application Insights resource (Step 9 →
+**Monitoring**), so `requests` shows every order lookup made by the OpenAPI tool.
 
 **Hardening for production:** set AI Search **API access control** to **Role-based access control**; set
 `SAFETY_FAIL_CLOSED=true`; host the orchestrator on App Service or Azure Container Apps with a **user-assigned
@@ -430,4 +486,7 @@ Azure portal → **Azure AI Foundry** *(or **Microsoft Foundry**)* → **Manage 
 | Every request blocked with `safety_service_error` | Missing **Cognitive Services User** on Content Safety (fail-closed); run with `-v` to see the HTTP 401/403 hint | Step 6 row 3, or the `CONTENT_SAFETY_API_KEY` lab fallback (Step 5) |
 | `HTTP 403 ... 'Azure AI User'` from `provision_agent` or `Could not create conversation` | Missing **Azure AI User** on the Foundry project | Step 6 row 1 — must come from an admin (no key fallback) |
 | Request blocked at `model_content_filter` | Foundry guardrail fired (expected for S1–S3) | Check the guardrail annotations in the trace |
+| `TRACING_MODE=azure_monitor ... No Application Insights resource is connected` | Tracing not connected for the project | Step 13.1 item 2, or set `APPLICATIONINSIGHTS_CONNECTION_STRING` |
+| `Could not read the project's Application Insights connection (403)` | Your role can't read connection secrets | Set `APPLICATIONINSIGHTS_CONNECTION_STRING` from App Insights → Overview |
+| Traces sent but Foundry **Tracing** is empty | Ingestion delay, or no **Log Analytics Reader** | Wait 2–5 min; Step 6 row 9; check App Insights → Transaction search for the printed `trace=` id |
 | `ModuleNotFoundError: azure.functions` locally | Function venv missing deps | `pip install -r src/requirements.txt` |

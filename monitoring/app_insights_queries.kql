@@ -1,0 +1,63 @@
+// Application Insights > Logs queries for the Contoso support agent (see DEPLOYMENT.md Step 13.1).
+// Spans land in `dependencies`; span attributes are in customDimensions. Adjust `ago(...)` as needed.
+// Run one query at a time (select it, then Run).
+
+// 1. Turn outcomes: how many turns ended at each pipeline stage.
+dependencies
+| where timestamp > ago(24h) and name == "contoso.pipeline.turn"
+| summarize turns = count() by stage = tostring(customDimensions["contoso.stage"])
+| order by turns desc
+
+// 2. Which safety layer blocked what (client Prompt Shields vs. Foundry guardrail vs. output moderation).
+dependencies
+| where timestamp > ago(7d) and name == "contoso.pipeline.turn"
+| where tostring(customDimensions["contoso.blocked"]) == "True"
+| summarize blocks = count()
+    by stage = tostring(customDimensions["contoso.stage"]),
+       category = tostring(customDimensions["contoso.input.category"])
+| order by blocks desc
+
+// 3. End-to-end and agent latency (ms), hourly percentiles.
+dependencies
+| where timestamp > ago(24h)
+| where name == "contoso.pipeline.turn" or name startswith "invoke_agent"
+| summarize p50 = percentile(duration, 50), p95 = percentile(duration, 95), calls = count()
+    by span = iff(name == "contoso.pipeline.turn", "turn", "agent"), bin(timestamp, 1h)
+| order by timestamp asc
+
+// 4. Token usage per hour (from the GenAI agent spans).
+dependencies
+| where timestamp > ago(24h) and name startswith "invoke_agent"
+| extend input_tokens = toint(customDimensions["gen_ai.usage.input_tokens"]),
+         output_tokens = toint(customDimensions["gen_ai.usage.output_tokens"])
+| summarize input_tokens = sum(input_tokens), output_tokens = sum(output_tokens), runs = count() by bin(timestamp, 1h)
+| order by timestamp asc
+
+// 5. Tool mix: share of turns that used the search tool, the order API, both, or neither.
+dependencies
+| where timestamp > ago(7d) and name == "contoso.pipeline.turn"
+| extend tools = tostring(customDimensions["contoso.tool_calls"])
+| extend search = tools contains "search", order_api = tools contains "openapi"
+| summarize turns = count() by search, order_api
+
+// 6. Outages (errors that are NOT safety decisions): agent failures, Content Safety unavailable.
+dependencies
+| where timestamp > ago(7d) and name == "contoso.pipeline.turn" and success == false
+| project timestamp, operation_Id, stage = tostring(customDimensions["contoso.stage"]),
+          input = tostring(customDimensions["contoso.input.category"]),
+          output = tostring(customDimensions["contoso.output.category"])
+| order by timestamp desc
+
+// 7. Exam suite: failing cases with their trace ids (run_exam_checks --trace azure_monitor).
+dependencies
+| where timestamp > ago(1d) and name == "contoso.exam.case"
+| project timestamp, operation_Id, case_id = tostring(customDimensions["contoso.case.id"]),
+          category = tostring(customDimensions["contoso.case.category"]),
+          passed = tostring(customDimensions["contoso.case.passed"])
+| order by passed asc, case_id asc
+
+// 8. Everything in one trace: paste an id printed as `trace=...` by the CLI.
+union dependencies, requests, traces, exceptions
+| where operation_Id == "<trace-id>"
+| project timestamp, itemType, name, duration, success, message, customDimensions
+| order by timestamp asc

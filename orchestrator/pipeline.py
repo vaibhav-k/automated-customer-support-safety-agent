@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Optional, Protocol
+
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 from .agent_client import AgentInvocationError, AgentReply, ContentFilterBlockedError
 from .safety import SafetyCategory, SafetyVerdict
+from .telemetry import current_trace_id, get_tracer
 
 logger = logging.getLogger("contoso.pipeline")
 
@@ -63,6 +67,7 @@ class PipelineResult:
     citations: list[dict] = field(default_factory=list)
     tool_calls: list[str] = field(default_factory=list)
     response_id: str = ""
+    trace_id: str = ""  # App Insights operation_Id of this turn ('' when tracing is off)
 
     def as_dict(self) -> dict:
         return {
@@ -74,7 +79,30 @@ class PipelineResult:
             "citations": list(self.citations),
             "tool_calls": list(self.tool_calls),
             "response_id": self.response_id,
+            "trace_id": self.trace_id,
         }
+
+
+def _is_outage(result: PipelineResult) -> bool:
+    verdicts = (result.input_verdict, result.output_verdict)
+    service_error = any(v is not None and v.category == SafetyCategory.SERVICE_ERROR for v in verdicts)
+    return result.reply == UNAVAILABLE_MESSAGE or service_error
+
+
+def _record_result(span: trace.Span, result: PipelineResult) -> None:
+    """Attach the turn outcome to its span (no message content: that is opt-in via the GenAI instrumentor)."""
+    span.set_attribute("contoso.stage", result.stage)
+    span.set_attribute("contoso.blocked", result.blocked)
+    span.set_attribute("contoso.tool_calls", list(result.tool_calls))
+    span.set_attribute("contoso.citations", len(result.citations))
+    if result.response_id:
+        span.set_attribute("gen_ai.response.id", result.response_id)
+    if result.input_verdict is not None:
+        span.set_attribute("contoso.input.category", result.input_verdict.category.value)
+    if result.output_verdict is not None:
+        span.set_attribute("contoso.output.category", result.output_verdict.category.value)
+    if _is_outage(result):  # an outage is an error; a safety block is the system working as designed
+        span.set_status(Status(StatusCode.ERROR, f"support systems unavailable at stage {result.stage}"))
 
 
 class SupportPipeline:
@@ -85,8 +113,10 @@ class SupportPipeline:
         *,
         check_output: bool = True,
         skip_input_gate: bool = False,
+        tracer: Optional[trace.Tracer] = None,
     ) -> None:
         self._gate = gate
+        self._tracer = tracer or get_tracer()
         self._agent = agent
         self._check_output = check_output
         # Test mode only: lets attacks reach the Foundry guardrail so layer 1b can be verified on its own.
@@ -95,11 +125,35 @@ class SupportPipeline:
             logger.warning("Client-side input safety gate is DISABLED (test mode). Never use this in production.")
 
     def handle(self, conversation_id: str, user_text: str, documents: Sequence[str] = ()) -> PipelineResult:
+        """Run one customer turn inside a ``contoso.pipeline.turn`` span (a no-op when tracing is off)."""
+        with self._tracer.start_as_current_span("contoso.pipeline.turn") as span:
+            span.set_attribute("gen_ai.conversation.id", conversation_id)
+            span.set_attribute("contoso.input.chars", len(user_text))
+            span.set_attribute("contoso.input.documents", len(documents))
+            result = replace(
+                self._handle(conversation_id, user_text, documents),
+                trace_id=current_trace_id(),
+            )
+            _record_result(span, result)
+            return result
+
+    def _checked(self, span_name: str, check: Callable[[], SafetyVerdict]) -> SafetyVerdict:
+        """Run one Content Safety check in its own span."""
+        with self._tracer.start_as_current_span(span_name) as span:
+            verdict = check()
+            span.set_attribute("contoso.safety.allowed", verdict.allowed)
+            span.set_attribute("contoso.safety.category", verdict.category.value)
+            return verdict
+
+    def _handle(self, conversation_id: str, user_text: str, documents: Sequence[str]) -> PipelineResult:
         # 1) Input safety: Prompt Shields + harm categories. Blocked input never reaches the agent.
         if self._skip_input_gate:
             input_verdict = SafetyVerdict(True, SafetyCategory.SAFE, "input gate skipped (test mode)")
         else:
-            input_verdict = self._gate.check_user_input(user_text, documents)
+            input_verdict = self._checked(
+                "contoso.safety.input",
+                lambda: self._gate.check_user_input(user_text, documents),
+            )
         if not input_verdict.allowed:
             logger.warning(
                 "Input blocked: %s (%s)",
@@ -115,6 +169,7 @@ class SupportPipeline:
             reply = self._agent.ask(conversation_id, compose_agent_input(user_text, documents))
         except ContentFilterBlockedError as exc:
             logger.warning("%s", exc)
+            trace.get_current_span().add_event("contoso.content_filter_block", {"detail": str(exc)})
             return PipelineResult(BLOCKED_INPUT_MESSAGE, True, "model_content_filter", input_verdict)
         except AgentInvocationError as exc:
             logger.error("Agent invocation failed: %s", exc)
@@ -123,7 +178,10 @@ class SupportPipeline:
         # 3) Output safety (defence in depth).
         output_verdict: Optional[SafetyVerdict] = None
         if self._check_output:
-            output_verdict = self._gate.check_model_output(reply.text)
+            output_verdict = self._checked(
+                "contoso.safety.output",
+                lambda: self._gate.check_model_output(reply.text),
+            )
             if not output_verdict.allowed and output_verdict.category != SafetyCategory.SERVICE_ERROR:
                 logger.warning("Output blocked: %s", output_verdict.detail)
                 return PipelineResult(

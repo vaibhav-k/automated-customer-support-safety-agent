@@ -51,7 +51,7 @@ FACT_PATTERNS: dict[str, re.Pattern[str]] = {
     "policy_id": re.compile(r"\bPOL-[A-Z]{3}-\d{3}\b"),
     "order_id": re.compile(r"\bCON-\d{6}\b"),
     "customer_id": re.compile(r"\bCUST-\d{5}\b"),
-    "tracking": re.compile(r"\b[A-Z]{2}[0-9][A-Z0-9]{7,}\b"),
+    "tracking": re.compile(r"\b[A-Z]{2}\d[A-Z0-9]{7,}\b"),
 }
 _ORDER_TOOL_MARKERS = ("openapi", "contoso_order_status", "getorderstatus")
 _SEARCH_TOOL_MARKERS = ("azure_ai_search", "search")

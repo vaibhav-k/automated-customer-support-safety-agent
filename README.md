@@ -122,12 +122,16 @@ automated_customer_support_safety_agent/
 │
 ├── orchestrator/                 ← client pipeline: safety gate → agent → output check
 │   ├── __init__.py
-│   ├── __main__.py               ← CLI: python -m orchestrator [-q "..."] [--json]
+│   ├── __main__.py               ← CLI: python -m orchestrator [-q "..."] [--json] [--trace ...]
 │   ├── auth.py                   ← shared DefaultAzureCredential factory (keyless)
 │   ├── config.py                 ← validated settings from env/.env
 │   ├── safety.py                 ← Prompt Shields + text moderation (keyless, retries, fail-closed)
 │   ├── agent_client.py           ← Foundry agent via Conversations + Responses APIs
-│   └── pipeline.py               ← end-to-end orchestration and blocking stages
+│   ├── pipeline.py               ← end-to-end orchestration and blocking stages
+│   └── telemetry.py              ← OpenTelemetry tracing: console span tree or Application Insights
+│
+├── monitoring/
+│   └── app_insights_queries.kql  ← KQL: outcomes, blocks by layer, latency, tokens, tool mix, outages
 │
 ├── scripts/
 │   ├── __init__.py
@@ -145,6 +149,7 @@ automated_customer_support_safety_agent/
     ├── test_function_app.py      ← offline unit tests (no Azure needed)
     ├── test_safety.py
     ├── test_pipeline.py
+    ├── test_telemetry.py
     └── test_ingest_and_provision.py
 ```
 
@@ -155,7 +160,7 @@ automated_customer_support_safety_agent/
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
-pytest                                   # 104 offline tests, no Azure resources required
+pytest                                   # 126 offline tests, no Azure resources required
 Copy-Item .env.example .env              # then follow DEPLOYMENT.md
 python -m scripts.ingest_policy
 python -m scripts.provision_agent
@@ -174,6 +179,8 @@ python -m scripts.run_exam_checks
 | `python -m scripts.evaluate_quality` | + groundedness and relevance AI judges (`pip install -r requirements-eval.txt`) |
 | `python -m scripts.teardown` / `--yes` | Show / delete the agent and the index, then print the resource-group delete commands |
 | `python -m scripts.run_exam_checks --only S1,S2,S3 --skip-input-gate` | Bypass the client gate to prove the Foundry guardrail (layer 1b) blocks attacks on its own |
+| `python -m orchestrator --trace console -q "..."` | Print the turn's span tree (safety checks, agent call, tokens, latency) |
+| `python -m scripts.run_exam_checks --trace azure_monitor` | Send one trace per case to Application Insights / Foundry **Tracing** (DEPLOYMENT Step 13.1) |
 | `cd src; func start` | Run the order API locally on port 7071 |
 
 ### Run the CI checks locally
@@ -235,7 +242,7 @@ Skill-area weights are from the official AI-103 study guide. ✅ = implemented a
 | ✅ Integrate agent tools: APIs, search, custom functions | `src/function_app.py` | OpenAPI auth modes: anonymous / project connection / managed identity |
 | ✅ Build workflows with safeguards | `pipeline.py` | Fail-closed gate, output moderation, blocked-stage reporting |
 | ✅ Tune generation behavior (prompt engineering, parameters) | `AGENT_TEMPERATURE`, prompt | Low temperature for factual support; explicit fallback phrasing |
-| 📘 Observability: tracing, token analytics, safety signals, latency | DEPLOYMENT Step 13 | Trace per tool call; guardrail annotations |
+| ✅ Observability: tracing, token analytics, safety signals, latency | `telemetry.py`, `monitoring/*.kql`, DEPLOYMENT 13.1 | OpenTelemetry → Application Insights connected to the project; `AIProjectInstrumentor` GenAI spans; content recording off by default; which layer blocked |
 | ➖ Multi-agent orchestration, reflection loops | — | Extension idea: add a "refund approval" agent with human approval |
 
 ### 3–4. Computer vision (10–15%) and text analysis / speech (10–15%)
@@ -277,6 +284,8 @@ Skill-area weights are from the official AI-103 study guide. ✅ = implemented a
 - **Keyless by default.** Every client uses `DefaultAzureCredential`; the only secret (function key) lives in a
   Foundry *Custom keys* connection. Swap the OpenAPI auth to managed identity + Entra-protected Function for zero
   secrets.
+- **Observable, privacy-first.** OpenTelemetry spans for every turn (`--trace console|azure_monitor`); outcomes,
+  tokens and latency are recorded, message content only when `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`.
 - **Fail closed.** If Content Safety is unreachable the request is blocked (`SAFETY_FAIL_CLOSED=true`).
 - **Deterministic mock backend.** The Function serves fixed data so verification runs are repeatable.
 - **Server-side memory.** Conversations live in Foundry; the client holds only the conversation ID.

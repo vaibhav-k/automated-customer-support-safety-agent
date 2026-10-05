@@ -103,6 +103,14 @@ def _describe_api_error(exc: Exception) -> str:
     return str(exc)
 
 
+def _one_line(exc: Exception) -> str:
+    """First line of an Azure error without the trailing docs link, e.g. for a 403 'missing permission'."""
+    lines = str(exc).strip().splitlines() or [type(exc).__name__]
+    first = lines[0].split(" Please refer to ")[0]
+    status = getattr(exc, "status_code", None)
+    return f"HTTP {status}: {first}" if status else first
+
+
 def _is_content_filter(code: Any, message: Any) -> bool:
     haystack = f"{code or ''} {message or ''}".lower()
     return any(marker in haystack for marker in _CONTENT_FILTER_MARKERS)
@@ -255,19 +263,48 @@ class SupportAgentClient:
         credential: TokenCredential,
         *,
         openai_client: Optional[OpenAI] = None,
+        resolve_agent_id: bool = False,
     ) -> None:
         if not project_endpoint:
             raise ValueError("FOUNDRY_PROJECT_ENDPOINT is required")
         if not agent_name:
             raise ValueError("AGENT_NAME is required")
         self._agent_name = agent_name
+        self._agent_id: Optional[str] = None
         self._project: Optional[AIProjectClient] = None
         if openai_client is None:
             self._project = AIProjectClient(endpoint=project_endpoint, credential=credential)
             # Bounded waits: the openai defaults (600 s, 2 retries) can block ~30 min and a retried
             # responses.create after a read timeout may append the user's turn to the conversation twice.
             openai_client = self._project.get_openai_client(timeout=AGENT_TIMEOUT_SECONDS, max_retries=1)
+            if resolve_agent_id:
+                self._agent_id = self._latest_version_id()
         self._openai = openai_client
+
+    def _latest_version_id(self) -> Optional[str]:
+        """Id of the agent's latest version. Sent in ``agent_reference`` so Foundry's Tracing view can
+        correlate client-side traces with the agent; optional, so a lookup failure only costs that link.
+        """
+        if self._project is None:
+            return None
+        try:
+            latest = self._project.agents.get(self._agent_name).versions.latest
+        except AzureError as exc:
+            logger.warning("Could not resolve agent id for trace correlation: %s", _one_line(exc))
+            return None
+        logger.info(
+            "Agent %s latest version %s (id %s)",
+            self._agent_name,
+            latest.version,
+            latest.id,
+        )
+        return latest.id
+
+    def _agent_reference(self) -> dict[str, str]:
+        reference = {"name": self._agent_name, "type": "agent_reference"}
+        if self._agent_id:
+            reference["id"] = self._agent_id
+        return reference
 
     @property
     def agent_name(self) -> str:
@@ -292,12 +329,7 @@ class SupportAgentClient:
             response = self._openai.responses.create(
                 conversation=conversation_id,
                 input=user_text,
-                extra_body={
-                    "agent_reference": {
-                        "name": self._agent_name,
-                        "type": "agent_reference",
-                    }
-                },
+                extra_body={"agent_reference": self._agent_reference()},
             )
         except APIError as exc:
             if _is_content_filter(getattr(exc, "code", None), str(exc)):

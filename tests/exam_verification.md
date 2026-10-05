@@ -208,6 +208,21 @@ refusal or clarifying question scores 1–3 by design — and the score varies b
 > safety service** instead. Deterministic checks such as this fabricated-fact test cost nothing and catch the most
 > damaging failure — confidently wrong numbers.
 
+## 7c. Track H — Observability (tracing)
+
+*AI-103: "Monitor and observe agents: tracing, token analytics, safety signals, latency".* Setup: DEPLOYMENT.md
+Step 13.1.
+
+| ID | Do | Pass |
+|---|---|---|
+| H1 | `python -m orchestrator --trace console -q "What's the return window for a laptop with Contoso Plus?"` | Span tree shows `contoso.pipeline.turn` with children `contoso.safety.input`, `invoke_agent …` (with `in_tokens`/`out_tokens`) and `contoso.safety.output`; `stage=completed` |
+| H2 | `python -m orchestrator --trace azure_monitor -q "Status for CUST-10001?"` and note the printed `trace=` id | Within 5 min the run appears in Foundry portal **Tracing**, and App Insights **Transaction search** finds the id (turn, safety and agent spans) |
+| H3 | `python -m scripts.run_exam_checks --only S1,S2,S3 --skip-input-gate --trace azure_monitor`, then KQL query 2 in `monitoring/app_insights_queries.kql` | The turns show `stage=model_content_filter` with a `contoso.content_filter_block` span event; without `--skip-input-gate` they show `stage=input_safety` |
+| H4 | Inspect any H2 span's attributes | No prompt or reply text recorded (content recording off by default) |
+
+> **Exam note:** a safety block is not an error. The turn span is marked as an error only for outages (agent call
+> failed, Content Safety unreachable), so KQL query 6 alerts on real incidents and not on blocked attacks.
+
 ## 8. Sign-off
 
 | Track | MUST cases | Passed | Notes |
@@ -219,6 +234,7 @@ refusal or clarifying question scores 1–3 by design — and the score varies b
 | E — Safety | S1–S6 | ☐ | Record the blocking layer for S1–S5 |
 | F — Security/RBAC | X1–X3, X5 | ☐ | |
 | G — Quality evaluation | All answered cases | ☐ | Groundedness and relevance ≥ 3, no unsupported facts |
+| H — Observability | H1, H2, H4 | ☐ | H3 optional: needs the Foundry guardrail from Step 11 |
 
 **Accepted when every MUST row is ticked.** Keep `exam_report.json` with your study notes — reviewing *why* a
 case was blocked at layer 1 vs. layer 1b is excellent exam practice.

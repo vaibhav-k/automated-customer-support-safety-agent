@@ -1,4 +1,5 @@
-"""Run the AI-103 verification suite (``tests/exam_cases.json``) against the live deployment.
+"""
+Run the AI-103 verification suite (``tests/exam_cases.json``) against the live deployment.
 
 Every case goes through the full pipeline (Content Safety -> Foundry agent -> output check)
 in a fresh server-side conversation. Results are scored against the expectations in the
@@ -58,6 +59,7 @@ class CaseOutcome:
     stage: str = ""
     tool_calls: list[str] = field(default_factory=list)
     citations: int = 0
+    trace_id: str = ""  # App Insights operation_Id (with --trace azure_monitor)
 
 
 # Tool-call trace entries look like "<item_type>[:<name>]"; match a family by any alias.
@@ -162,17 +164,25 @@ def evaluate(expect: dict[str, Any], result: dict[str, Any]) -> list[str]:
 
 
 def _run_case(case: dict[str, Any], pipeline, agent) -> CaseOutcome:
-    """Run one case; never raises, so a single failure cannot abort the suite."""
-    try:
-        return _run_case_unguarded(case, pipeline, agent)
-    except Exception as exc:  # record and continue
-        return CaseOutcome(
-            case["id"],
-            case["category"],
-            case["objective"],
-            False,
-            [f"unexpected error: {type(exc).__name__}: {exc}"],
-        )
+    """Run one case in its own trace (``contoso.exam.case``); never raises, so one failure can't abort the suite."""
+    from orchestrator.telemetry import current_trace_id, get_tracer
+
+    with get_tracer().start_as_current_span("contoso.exam.case") as span:
+        span.set_attribute("contoso.case.id", case["id"])
+        span.set_attribute("contoso.case.category", case["category"])
+        try:
+            outcome = _run_case_unguarded(case, pipeline, agent)
+        except Exception as exc:  # record and continue
+            outcome = CaseOutcome(
+                case["id"],
+                case["category"],
+                case["objective"],
+                False,
+                [f"unexpected error: {type(exc).__name__}: {exc}"],
+            )
+        span.set_attribute("contoso.case.passed", outcome.passed)
+        outcome.trace_id = current_trace_id()
+        return outcome
 
 
 def _run_case_unguarded(case: dict[str, Any], pipeline, agent) -> CaseOutcome:
@@ -215,6 +225,15 @@ def _run_case_unguarded(case: dict[str, Any], pipeline, agent) -> CaseOutcome:
     )
 
 
+def _print_outcome(case: dict[str, Any], outcome: CaseOutcome) -> None:
+    mark = "PASS" if outcome.passed else "FAIL"
+    print(f"[{mark}] {case['id']:<3} {case['category']:<9} {case['objective']}")
+    for failure in outcome.failures:
+        print(f"         - {failure}")
+    if outcome.trace_id and not outcome.passed:
+        print(f"         - trace: {outcome.trace_id}")
+
+
 def load_cases(path: Path, only: set[str], category: str | None) -> list[dict[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
     cases = data["cases"]
@@ -236,12 +255,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Bypass the client-side Content Safety gate so attacks reach the Foundry guardrail (tests layer 1b).",
     )
+    parser.add_argument(
+        "--trace",
+        choices=["off", "console", "azure_monitor"],
+        default=None,
+        help="Trace every case (one trace per case). Overrides TRACING_MODE.",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, format="  %(levelname)s %(name)s: %(message)s")
 
     from contextlib import ExitStack
 
-    from orchestrator.__main__ import build_pipeline
+    from orchestrator.__main__ import build_pipeline, setup_tracing
     from orchestrator.auth import make_credential
     from orchestrator.config import ConfigError, Settings
 
@@ -257,7 +282,14 @@ def main(argv: list[str] | None = None) -> int:
             settings = Settings.from_env()
             credential = make_credential()
             stack.callback(credential.close)
-            pipeline, agent = build_pipeline(settings, credential, stack, skip_input_gate=args.skip_input_gate)
+            tracing = setup_tracing(settings, credential, stack, args.trace)
+            pipeline, agent = build_pipeline(
+                settings,
+                credential,
+                stack,
+                skip_input_gate=args.skip_input_gate,
+                tracing=tracing,
+            )
         except (ConfigError, ValueError) as exc:
             print(f"Configuration error: {exc}", file=sys.stderr)
             return 2
@@ -265,10 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         for case in cases:
             outcome = _run_case(case, pipeline, agent)
             outcomes.append(outcome)
-            mark = "PASS" if outcome.passed else "FAIL"
-            print(f"[{mark}] {case['id']:<3} {case['category']:<9} {case['objective']}")
-            for failure in outcome.failures:
-                print(f"         - {failure}")
+            _print_outcome(case, outcome)
 
     passed = sum(o.passed for o in outcomes)
     print(f"\n{passed}/{len(outcomes)} cases passed.")
