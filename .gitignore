@@ -14,10 +14,6 @@ venv/
 build/
 dist/
 
-# Python cache
-__pycache__/
-*.py[cod]
-
 # Azure Functions
 .python_packages/
 bin/
@@ -36,5 +32,13 @@ Thumbs.db
 # Exam run reports
 exam_report*.json
 
-# Azure variables
+# Azure variables / local secrets
+azvars.ps1
+*.azvars.ps1
 .azvars.ps1
+.env.*
+!.env.example
+*.local.ps1
+
+# Type-checker cache
+.mypy_cache/

@@ -25,7 +25,7 @@
       "get": {
         "operationId": "getOrderStatus",
         "summary": "Get the status of a customer's order",
-        "description": "Returns the status of the customer's most recent order, or of a specific order when orderId is supplied. Call this only when the customer asks about order status, tracking, carrier, or delivery date and has provided a customerId in the format CUST-12345.",
+        "description": "Returns the status of the customer's most recent order, or of a specific order when orderId is supplied. Call this only when the customer asks about order status, tracking, carrier, or delivery date and has provided a customerId in the format CUST-12345. Always returns HTTP 200 for lookups: check `found` - when it is false, `error` is OrderNotFound, InvalidCustomerId, or InvalidOrderId and `message` explains why.",
         "tags": [
           "Orders"
         ],
@@ -55,60 +55,56 @@
         ],
         "responses": {
           "200": {
-            "description": "Order status found.",
+            "description": "Lookup completed. `found` is true with order details, or false with an `error` code and `message`.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/OrderStatusResponse"
                 },
-                "example": {
-                  "customerId": "CUST-10001",
-                  "orderId": "CON-500101",
-                  "status": "Shipped",
-                  "placedOn": "2026-09-28",
-                  "region": "US-WA",
-                  "carrier": "Contoso Express",
-                  "trackingNumber": "CX1Z99A0001",
-                  "estimatedDelivery": "2026-10-07",
-                  "lastUpdated": "2026-10-03T14:22:00Z",
-                  "itemCount": 2,
-                  "otherOrderIds": [
-                    "CON-500077"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The customerId or orderId is malformed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "example": {
-                  "error": "InvalidCustomerId",
-                  "message": "customerId must match the format CUST-12345 (CUST- followed by 5 digits)."
+                "examples": {
+                  "found": {
+                    "summary": "Order found",
+                    "value": {
+                      "found": true,
+                      "customerId": "CUST-10001",
+                      "orderId": "CON-500101",
+                      "status": "Shipped",
+                      "placedOn": "2026-09-28",
+                      "region": "US-WA",
+                      "carrier": "Contoso Express",
+                      "trackingNumber": "CX1Z99A0001",
+                      "estimatedDelivery": "2026-10-07",
+                      "lastUpdated": "2026-10-03T14:22:00Z",
+                      "itemCount": 2,
+                      "otherOrderIds": [
+                        "CON-500077"
+                      ]
+                    }
+                  },
+                  "notFound": {
+                    "summary": "No order for this customer",
+                    "value": {
+                      "found": false,
+                      "customerId": "CUST-99999",
+                      "error": "OrderNotFound",
+                      "message": "No order was found for customer CUST-99999."
+                    }
+                  },
+                  "invalid": {
+                    "summary": "Malformed customerId",
+                    "value": {
+                      "found": false,
+                      "customerId": "12345",
+                      "error": "InvalidCustomerId",
+                      "message": "customerId must match the format CUST-12345 (CUST- followed by 5 digits)."
+                    }
+                  }
                 }
               }
             }
           },
           "401": {
             "description": "Missing or invalid function key (returned by the Azure Functions host with an empty body)."
-          },
-          "404": {
-            "description": "No order exists for the given customerId (and orderId, if supplied).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "example": {
-                  "error": "OrderNotFound",
-                  "message": "No order was found for customer CUST-99999."
-                }
-              }
-            }
           },
           "500": {
             "description": "Unexpected server error.",
@@ -140,17 +136,19 @@
     "schemas": {
       "OrderStatusResponse": {
         "type": "object",
-        "description": "Status payload for a single order.",
+        "description": "Result of an order lookup. When found is false, only customerId, error and message are present.",
         "required": [
-          "customerId",
-          "orderId",
-          "status"
+          "found",
+          "customerId"
         ],
         "properties": {
+          "found": {
+            "type": "boolean",
+            "description": "True when an order was found; false for unknown or malformed IDs."
+          },
           "customerId": {
             "type": "string",
-            "description": "Customer ID that was looked up.",
-            "pattern": "^CUST-[0-9]{5}$"
+            "description": "Customer ID that was looked up (echoed back, normalised to upper case)."
           },
           "orderId": {
             "type": "string",
@@ -211,6 +209,19 @@
               "type": "string",
               "pattern": "^CON-[0-9]{6}$"
             }
+          },
+          "error": {
+            "type": "string",
+            "description": "Present only when found is false.",
+            "enum": [
+              "OrderNotFound",
+              "InvalidCustomerId",
+              "InvalidOrderId"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable explanation when found is false."
           }
         }
       },
@@ -225,9 +236,6 @@
             "type": "string",
             "description": "Machine-readable error code.",
             "enum": [
-              "InvalidCustomerId",
-              "InvalidOrderId",
-              "OrderNotFound",
               "InternalError"
             ]
           },
@@ -235,7 +243,8 @@
             "type": "string",
             "description": "Human-readable error description."
           }
-        }
+        },
+        "description": "Returned only for unexpected server faults (HTTP 500)."
       }
     }
   }

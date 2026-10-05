@@ -26,6 +26,7 @@ def build_pipeline(settings: Settings, credential, stack: ExitStack) -> tuple[Su
         harm_severity_threshold=settings.harm_severity_threshold,
         fail_closed=settings.safety_fail_closed,
         max_input_chars=settings.max_input_chars,
+        api_key=settings.content_safety_api_key,
     )
     stack.callback(gate.close)
     agent = SupportAgentClient(settings.foundry_project_endpoint, settings.agent_name, credential)  # type: ignore[arg-type]
@@ -69,13 +70,25 @@ def main(argv: list[str] | None = None) -> int:
         "for indirect attacks before the agent sees it.",
     )
     parser.add_argument("--json", action="store_true", help="Print full pipeline results as JSON.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging.")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Debug logging for this app's own modules.",
+    )
+    parser.add_argument(
+        "--trace-http",
+        action="store_true",
+        help="Also log Azure SDK / HTTP / credential details (very noisy).",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
+        level=logging.DEBUG if args.trace_http else logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if args.verbose:
+        logging.getLogger("contoso").setLevel(logging.DEBUG)
     if args.doc and not args.query:
         parser.error("--doc requires --query")
 

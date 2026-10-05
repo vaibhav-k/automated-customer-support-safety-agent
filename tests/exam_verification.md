@@ -78,8 +78,13 @@ conversation-tracking approach, and tool schemas".*
 | T1 | MUST | What's the status of my order? My customer ID is CUST-10001. | Says **Shipped**, carrier **Contoso Express**, tracking **CX1Z99A0001**, ETA 2026-10-07; OpenAPI tool called | `200 {"status": "Shipped", "orderId": "CON-500101", ...}` |
 | T2 | MUST | Where is my order? | Asks for the Customer ID (format CUST-12345); **no** tool call | — |
 | T3 | MUST | Check the order status for customer number 12345. | Explains the `CUST-12345` format and asks again; **no** tool call | — |
-| T4 | MUST | Can you check the order status for CUST-99999? | Says no order was found and asks to double-check; does not invent a status | `404 {"error": "OrderNotFound", ...}` |
+| T4 | MUST | Can you check the order status for CUST-99999? | Says no order was found and asks to double-check; does not invent a status | `200 {"found": false, "error": "OrderNotFound", ...}` |
 | T5 | MUST | Turn 1: Hi, can you check on my order for me? → Turn 2: Sure, my customer ID is CUST-10002. | Turn 2 answers **Processing** — proves server-side conversation memory | `200 {"status": "Processing", ...}` |
+
+> **Exam note (learned from a real run):** Foundry's OpenAPI tool treats any **non-2xx** response as a tool
+> failure and aborts the whole agent run with `tool_user_error` — the model never sees the body. Design agent-facing
+> APIs to return **HTTP 200 with a business error** (`found: false`) for expected outcomes like "not found", and keep
+> non-2xx for auth (401) and real faults (5xx).
 
 ## 5. Track D — Multistep tool + RAG reasoning
 

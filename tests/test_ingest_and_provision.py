@@ -4,6 +4,11 @@ import json
 from pathlib import Path
 
 import pytest
+from azure.search.documents.indexes.models import (
+    AzureOpenAIVectorizer,
+    AzureOpenAIVectorizerParameters,
+    SearchIndex,
+)
 from openapi_spec_validator import validate
 
 from orchestrator.config import OPENAPI_SPEC_PATH, POLICY_PATH, SYSTEM_PROMPT_PATH
@@ -16,20 +21,33 @@ from scripts.ingest_policy import (
 from scripts.provision_agent import build_definition, prepare_openapi_spec
 
 
+def _aoai_vectorizer_params(index: SearchIndex) -> AzureOpenAIVectorizerParameters:
+    """Narrow the index's first vectorizer to the Azure OpenAI type (keeps type checkers happy)."""
+    assert index.vector_search is not None
+    assert index.vector_search.vectorizers is not None
+    vectorizer = index.vector_search.vectorizers[0]
+    assert isinstance(vectorizer, AzureOpenAIVectorizer)
+    assert vectorizer.parameters is not None
+    return vectorizer.parameters
+
+
 def test_policy_chunks_are_heading_aware_and_bounded():
     chunks = chunk_markdown(POLICY_PATH.read_text(encoding="utf-8"), "contoso_policy.md", "https://p/x.md")
     assert len(chunks) >= 30
     assert len({c.id for c in chunks}) == len(chunks)
     assert all(len(c.content) <= 1800 + 200 for c in chunks)
     alaska = [c for c in chunks if "POL-SHP-002" in c.content]
-    assert alaska and "Alaska" in alaska[0].content and alaska[0].title.startswith("4. Shipping Policy")
+    assert alaska
+    assert "Alaska" in alaska[0].content
+    assert alaska[0].title.startswith("4. Shipping Policy")
     assert alaska[0].url.startswith("https://p/x.md#")
 
 
 def test_split_long_respects_limit():
     text = "\n\n".join(["word " * 100] * 10)
     pieces = _split_long(text, 1000, 100)
-    assert len(pieces) > 1 and all(len(p) <= 1000 for p in pieces)
+    assert len(pieces) > 1
+    assert all(len(p) <= 1000 for p in pieces)
     with pytest.raises(ValueError):
         _split_long(text, 100, 100)
 
@@ -45,9 +63,10 @@ def test_index_definition_has_vectorizer_and_semantic_config():
     vector_field = next(f for f in index.fields if f.name == "content_vector")
     assert vector_field.vector_search_dimensions == 1536
     assert vector_field.vector_search_profile_name == VECTOR_PROFILE_NAME
-    vectorizer = index.vector_search.vectorizers[0]
-    assert vectorizer.parameters.resource_url == "https://aoai.openai.azure.com"
-    assert vectorizer.parameters.api_key is None  # managed identity, keyless
+    params = _aoai_vectorizer_params(index)
+    assert params.resource_url == "https://aoai.openai.azure.com"
+    assert params.api_key is None  # managed identity, keyless
+    assert index.semantic_search is not None
     assert index.semantic_search.default_configuration_name
 
 
@@ -60,7 +79,7 @@ def test_index_vectorizer_key_fallback():
         3072,
         vectorizer_api_key="lab-key",
     )
-    assert index.vector_search.vectorizers[0].parameters.api_key == "lab-key"
+    assert _aoai_vectorizer_params(index).api_key == "lab-key"
     assert next(f for f in index.fields if f.name == "content_vector").vector_search_dimensions == 3072
 
 
@@ -71,7 +90,8 @@ def test_settings_repr_masks_keys(monkeypatch):
     monkeypatch.setenv("AZURE_OPENAI_VECTORIZER_API_KEY", "another-secret")
     settings = Settings.from_env(env_file=Path("does-not-exist.env"))
     assert settings.search_api_key == "super-secret-value"
-    assert "super-secret-value" not in repr(settings) and "another-secret" not in repr(settings)
+    assert "super-secret-value" not in repr(settings)
+    assert "another-secret" not in repr(settings)
 
 
 def test_openapi_spec_is_valid_openapi_3():
@@ -121,5 +141,32 @@ def test_agent_definition_serialises():
     types = [t["type"] for t in data["tools"]]
     assert types == ["azure_ai_search", "openapi"]
     index = data["tools"][0]["azure_ai_search"]["indexes"][0]
-    assert index["query_type"] == "vector_semantic_hybrid" and index["top_k"] == 5
+    assert index["query_type"] == "vector_semantic_hybrid"
+    assert index["top_k"] == 5
     assert data["tools"][1]["openapi"]["auth"]["type"] == "project_connection"
+
+
+@pytest.mark.parametrize("raw,expected", [(None, None), ("none", None), ("0.2", 0.2), ("0", 0.0)])
+def test_temperature_parsing(raw, expected):
+    from orchestrator.config import _parse_temperature
+
+    assert _parse_temperature(raw) == expected
+
+
+def test_temperature_omitted_from_definition_when_unset():
+    spec = prepare_openapi_spec(
+        json.loads(OPENAPI_SPEC_PATH.read_text(encoding="utf-8")),
+        "https://f.azurewebsites.net/api",
+        False,
+    )
+    definition = build_definition(
+        model="gpt-5-mini",
+        instructions="x",
+        temperature=None,
+        search_connection_id="c",
+        index_name="i",
+        top_k=5,
+        openapi_spec=spec,
+        order_api_connection_id=None,
+    )
+    assert "temperature" not in definition.as_dict()

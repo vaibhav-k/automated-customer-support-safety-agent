@@ -114,6 +114,13 @@ az group create --name $RG --location $LOCATION
 2. Open the resource → **Resource Management → Keys and Endpoint** → copy **Endpoint** →
    `.env` `CONTENT_SAFETY_ENDPOINT`. **Do not copy the keys** — this project authenticates with Entra ID.
 
+> **Lab fallback — no permission to assign roles:** if you cannot be granted **Cognitive Services User** on this
+> resource, copy **KEY 1** from **Keys and Endpoint** into `.env` as `CONTENT_SAFETY_API_KEY`. The gate then sends it
+> in the `Ocp-Apim-Subscription-Key` header instead of an Entra token and logs a warning on every start. Remove it once
+> the role is granted. There is **no** key fallback for the Foundry agent itself: invoking and provisioning the agent
+> always needs **Azure AI User** on the project (check the project's **Access control (IAM)** first — the creator is
+> sometimes granted it automatically).
+
 > The Foundry resource itself can also serve Content Safety APIs. A dedicated resource is used here so that the
 > RBAC boundary (who may call moderation) is explicit, which mirrors exam scenarios.
 
@@ -390,6 +397,7 @@ Azure portal → **Azure AI Foundry** *(or **Microsoft Foundry**)* → **Manage 
 | Agent answers policy questions without citations | Index lacks retrievable `url`/`title`, or search tool failing | Inspect the trace; confirm Step 6 rows 6–7 |
 | OpenAPI tool returns 401 | Key name mismatch | Connection **Key** must be `x-functions-key` exactly |
 | OpenAPI tool not called | Spec/description unclear or customerId missing | The agent asks for the ID by design (T2); include `CUST-xxxxx` |
-| Every request blocked with `safety_service_error` | Missing **Cognitive Services User** on Content Safety (fail-closed) | Step 6 row 3 |
+| Every request blocked with `safety_service_error` | Missing **Cognitive Services User** on Content Safety (fail-closed); run with `-v` to see the HTTP 401/403 hint | Step 6 row 3, or the `CONTENT_SAFETY_API_KEY` lab fallback (Step 5) |
+| `HTTP 403 ... 'Azure AI User'` from `provision_agent` or `Could not create conversation` | Missing **Azure AI User** on the Foundry project | Step 6 row 1 — must come from an admin (no key fallback) |
 | Request blocked at `model_content_filter` | Foundry guardrail fired (expected for S1–S3) | Check the guardrail annotations in the trace |
 | `ModuleNotFoundError: azure.functions` locally | Function venv missing deps | `pip install -r src/requirements.txt` |

@@ -25,6 +25,7 @@ def test_shipped_order_returns_status_payload():
     assert resp.status_code == 200
     assert resp.mimetype == "application/json"
     body = json.loads(resp.get_body())
+    assert body["found"] is True
     assert body["status"] == "Shipped"
     assert body["orderId"] == "CON-500101"
     assert body["trackingNumber"] == "CX1Z99A0001"
@@ -42,26 +43,33 @@ def test_specific_order_lookup():
 
 
 @pytest.mark.parametrize("bad_id", ["12345", "CUST-1234", "CUST-123456", "CUST-ABCDE", "", "CUST-10001;DROP"])
-def test_malformed_customer_id_is_400(bad_id):
+def test_malformed_customer_id_is_found_false(bad_id):
     resp = _call(bad_id)
-    assert resp.status_code == 400
-    assert json.loads(resp.get_body())["error"] == "InvalidCustomerId"
+    assert resp.status_code == 200  # agent-friendly: non-2xx would abort the Foundry agent run
+    body = json.loads(resp.get_body())
+    assert body["found"] is False and body["error"] == "InvalidCustomerId"
 
 
-def test_malformed_order_id_is_400():
-    resp = _call("CUST-10001", "500101")
-    assert resp.status_code == 400
-    assert json.loads(resp.get_body())["error"] == "InvalidOrderId"
+def test_malformed_order_id_is_found_false():
+    body = json.loads(_call("CUST-10001", "500101").get_body())
+    assert body["found"] is False and body["error"] == "InvalidOrderId"
 
 
-def test_unknown_customer_is_404():
+def test_unknown_customer_is_found_false():
     resp = _call("CUST-99999")
-    assert resp.status_code == 404
-    assert json.loads(resp.get_body())["error"] == "OrderNotFound"
+    assert resp.status_code == 200
+    body = json.loads(resp.get_body())
+    assert body == {
+        "found": False,
+        "customerId": "CUST-99999",
+        "error": "OrderNotFound",
+        "message": "No order was found for customer CUST-99999.",
+    }
 
 
-def test_unknown_order_for_known_customer_is_404():
-    assert _call("CUST-10001", "CON-999999").status_code == 404
+def test_unknown_order_for_known_customer_is_found_false():
+    body = json.loads(_call("CUST-10001", "CON-999999").get_body())
+    assert body["found"] is False and body["error"] == "OrderNotFound"
 
 
 def test_store_failure_is_500_without_leaking(monkeypatch):
@@ -93,3 +101,13 @@ def test_every_mock_status_is_in_openapi_enum():
     spec = json.loads(OPENAPI_SPEC_PATH.read_text(encoding="utf-8"))
     enum = spec["components"]["schemas"]["OrderStatusResponse"]["properties"]["status"]["enum"]
     assert set(function_app.VALID_STATUSES) == set(enum)
+
+
+@pytest.mark.parametrize("customer_id", ["CUST-10001", "CUST-99999", "12345"])
+def test_response_fields_match_openapi_contract(customer_id):
+    from orchestrator.config import OPENAPI_SPEC_PATH
+
+    schema = json.loads(OPENAPI_SPEC_PATH.read_text(encoding="utf-8"))["components"]["schemas"]["OrderStatusResponse"]
+    body = json.loads(_call(customer_id).get_body())
+    assert set(body) <= set(schema["properties"]), set(body) - set(schema["properties"])
+    assert all(field in body for field in schema["required"])

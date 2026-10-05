@@ -1,4 +1,5 @@
-"""Contoso Order Status API — Azure Functions (Python v2 programming model).
+"""
+Contoso Order Status API — Azure Functions (Python v2 programming model).
 
 This Function App is the "Action Executor" tool for the Foundry agent. The agent
 calls it through an OpenAPI tool (see ``agent/openapi_spec.json``).
@@ -7,7 +8,8 @@ Routes (all under the default ``/api`` prefix):
 
 * ``GET /api/orders/{customerId}/status``  -> order status for a customer
   (optional ``?orderId=CON-xxxxxx`` to pick a specific order; otherwise the most
-  recent order is returned).
+  recent order is returned). Unknown or malformed IDs return HTTP 200 with
+  ``{"found": false, "error": ...}`` so the agent can handle them (see ``_lookup_failure``).
 * ``GET /api/health``                       -> liveness probe (always anonymous).
 
 Auth level for the order route is controlled by the ``FUNCTION_AUTH_LEVEL`` app
@@ -36,6 +38,7 @@ logger = logging.getLogger("contoso.order_api")
 CUSTOMER_ID_PATTERN = re.compile(r"^CUST-\d{5}$")
 ORDER_ID_PATTERN = re.compile(r"^CON-\d{6}$")
 API_VERSION = "1.0.0"
+CONTOSO_EXPRESS = "Contoso Express"
 
 
 # --------------------------------------------------------------------------- #
@@ -71,7 +74,7 @@ _ORDERS: tuple[Order, ...] = (
         "Shipped",
         "2026-09-28",
         "US-WA",
-        "Contoso Express",
+        CONTOSO_EXPRESS,
         "CX1Z99A0001",
         "2026-10-07",
         "2026-10-03T14:22:00Z",
@@ -83,7 +86,7 @@ _ORDERS: tuple[Order, ...] = (
         "Delivered",
         "2026-08-11",
         "US-WA",
-        "Contoso Express",
+        CONTOSO_EXPRESS,
         "CX1Z99A0777",
         None,
         "2026-08-15T09:05:00Z",
@@ -155,7 +158,7 @@ _ORDERS: tuple[Order, ...] = (
         "Refunded",
         "2026-08-02",
         "US-CA",
-        "Contoso Express",
+        CONTOSO_EXPRESS,
         "CX1Z99A0107",
         None,
         "2026-08-30T16:00:00Z",
@@ -220,9 +223,22 @@ def _error(status_code: int, error: str, message: str) -> func.HttpResponse:
     return _json_response({"error": error, "message": message}, status_code)
 
 
+def _lookup_failure(customer_id: str, error: str, message: str) -> func.HttpResponse:
+    """
+    Business-level "no result" answers are HTTP 200 with ``found: false``.
+
+    Foundry's OpenAPI tool treats any non-2xx response as a tool failure and aborts the
+    whole agent run (``tool_user_error``), so the model never gets to apply its
+    ORDER NOT FOUND / INVALID INPUT fallbacks. Returning 200 lets the agent read the
+    error and answer the customer gracefully. Real faults (500) and auth (401) stay non-2xx.
+    """
+    return _json_response({"found": False, "customerId": customer_id, "error": error, "message": message})
+
+
 def _serialize(order: Order) -> dict:
     data = asdict(order)
     return {
+        "found": True,
         "customerId": data["customer_id"],
         "orderId": data["order_id"],
         "status": data["status"],
@@ -253,14 +269,14 @@ def get_order_status(req: func.HttpRequest) -> func.HttpResponse:
 
     if not CUSTOMER_ID_PATTERN.fullmatch(customer_id):
         logger.info("Rejected malformed customerId")
-        return _error(
-            400,
+        return _lookup_failure(
+            customer_id,
             "InvalidCustomerId",
             "customerId must match the format CUST-12345 (CUST- followed by 5 digits).",
         )
     if order_id is not None and not ORDER_ID_PATTERN.fullmatch(order_id):
-        return _error(
-            400,
+        return _lookup_failure(
+            customer_id,
             "InvalidOrderId",
             "orderId must match the format CON-123456 (CON- followed by 6 digits).",
         )
@@ -274,7 +290,7 @@ def get_order_status(req: func.HttpRequest) -> func.HttpResponse:
     if order is None:
         target = f"order {order_id} for customer {customer_id}" if order_id else f"customer {customer_id}"
         logger.info("No order found for %s", target)
-        return _error(404, "OrderNotFound", f"No order was found for {target}.")
+        return _lookup_failure(customer_id, "OrderNotFound", f"No order was found for {target}.")
 
     payload = _serialize(order)
     payload["otherOrderIds"] = [o.order_id for o in STORE.get_orders(customer_id) if o.order_id != order.order_id]

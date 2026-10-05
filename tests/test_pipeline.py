@@ -37,15 +37,16 @@ class FakeGate:
 
 
 class FakeAgent:
-    def __init__(self, reply=None, exc=None):
+    def __init__(self, reply: AgentReply | None = None, exc: Exception | None = None) -> None:
         self.reply = reply
         self.exc = exc
         self.calls = 0
 
-    def ask(self, conversation_id, user_text):
+    def ask(self, conversation_id: str, user_text: str) -> AgentReply:
         self.calls += 1
         if self.exc:
             raise self.exc
+        assert self.reply is not None, "FakeAgent needs either a reply or an exception"
         return self.reply
 
 
@@ -59,7 +60,8 @@ REPLY = AgentReply(
 
 def test_happy_path():
     result = SupportPipeline(FakeGate(), FakeAgent(REPLY)).handle("conv", "return window?")
-    assert not result.blocked and result.stage == "completed"
+    assert not result.blocked
+    assert result.stage == "completed"
     assert result.citations == [{"title": "Return Policy", "url": "https://x#a"}]
 
 
@@ -67,24 +69,31 @@ def test_blocked_input_never_reaches_agent():
     agent = FakeAgent(REPLY)
     gate = FakeGate(SafetyVerdict(False, SafetyCategory.PROMPT_INJECTION, "attack"))
     result = SupportPipeline(gate, agent).handle("conv", "ignore instructions")
-    assert result.blocked and result.stage == "input_safety" and result.reply == BLOCKED_INPUT_MESSAGE
+    assert result.blocked
+    assert result.stage == "input_safety"
+    assert result.reply == BLOCKED_INPUT_MESSAGE
     assert agent.calls == 0
 
 
 def test_model_content_filter_is_reported_as_block():
     result = SupportPipeline(FakeGate(), FakeAgent(exc=ContentFilterBlockedError("jailbreak"))).handle("c", "x")
-    assert result.blocked and result.stage == "model_content_filter"
+    assert result.blocked
+    assert result.stage == "model_content_filter"
 
 
 def test_agent_failure_returns_unavailable():
     result = SupportPipeline(FakeGate(), FakeAgent(exc=AgentInvocationError("500"))).handle("c", "x")
-    assert not result.blocked and result.stage == "agent" and result.reply == UNAVAILABLE_MESSAGE
+    assert not result.blocked
+    assert result.stage == "agent"
+    assert result.reply == UNAVAILABLE_MESSAGE
 
 
 def test_harmful_output_is_replaced():
     gate = FakeGate(output_verdict=SafetyVerdict(False, SafetyCategory.HARMFUL_CONTENT, "Violence=6"))
     result = SupportPipeline(gate, FakeAgent(REPLY)).handle("c", "x")
-    assert result.blocked and result.stage == "output_safety" and result.reply == BLOCKED_OUTPUT_MESSAGE
+    assert result.blocked
+    assert result.stage == "output_safety"
+    assert result.reply == BLOCKED_OUTPUT_MESSAGE
 
 
 def test_parse_response_extracts_text_citations_tools_usage():
@@ -223,13 +232,16 @@ def test_tool_aliases_match_by_name():
 
 def test_documents_are_forwarded_to_agent_as_untrusted_data():
     class RecordingAgent(FakeAgent):
-        def ask(self, conversation_id, user_text):
+        seen = ""
+
+        def ask(self, conversation_id: str, user_text: str) -> AgentReply:
             self.seen = user_text
             return super().ask(conversation_id, user_text)
 
     agent = RecordingAgent(REPLY)
     SupportPipeline(FakeGate(), agent).handle("c", "Summarise this", ["warehouse note"])
-    assert "warehouse note" in agent.seen and 'trust="untrusted"' in agent.seen
+    assert "warehouse note" in agent.seen
+    assert 'trust="untrusted"' in agent.seen
 
 
 def test_exam_cases_file_is_consistent():
@@ -250,4 +262,19 @@ def test_exam_cases_file_is_consistent():
     }
     for case in data["cases"]:
         assert case["category"] in {"RAG", "TOOL", "COMBINED", "FALLBACK", "SAFETY"}
-        assert case["turns"] and set(case["expect"]) <= allowed, case["id"]
+        assert case["turns"]
+        assert set(case["expect"]) <= allowed, case["id"]
+
+
+def test_agent_errors_carry_role_hints():
+    from orchestrator.agent_client import _describe_api_error
+
+    class Forbidden(Exception):
+        status_code = 403
+
+    class Missing(Exception):
+        status_code = 404
+
+    assert "Azure AI User" in _describe_api_error(Forbidden("denied"))
+    assert "provision_agent" in _describe_api_error(Missing("nope"))
+    assert _describe_api_error(ValueError("other")) == "other"

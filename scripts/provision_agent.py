@@ -1,4 +1,5 @@
-"""Create a new version of the Contoso support agent in Azure AI Foundry.
+"""
+Create a new version of the Contoso support agent in Azure AI Foundry.
 
 The agent definition combines:
 * ``agent/system_prompt.txt``  -> instructions (persona, guardrails, grounding, fallbacks)
@@ -24,8 +25,25 @@ import copy
 import json
 import logging
 import sys
+from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import urlparse
+
+from azure.ai.projects import AIProjectClient
+from azure.core.exceptions import (
+    AzureError,
+    ClientAuthenticationError,
+    HttpResponseError,
+    ResourceNotFoundError,
+)
+from azure.identity import DefaultAzureCredential
+
+from orchestrator.config import (
+    OPENAPI_SPEC_PATH,
+    SYSTEM_PROMPT_PATH,
+    ConfigError,
+    Settings,
+)
 
 logger = logging.getLogger("contoso.provision")
 
@@ -67,7 +85,7 @@ def build_definition(
     *,
     model: str,
     instructions: str,
-    temperature: float,
+    temperature: Optional[float],
     search_connection_id: str,
     index_name: str,
     top_k: int,
@@ -115,6 +133,10 @@ def build_definition(
             auth=auth,
         )
     )
+    # Only send temperature when configured: reasoning models return HTTP 400
+    # "Unsupported parameter: 'temperature'" at run time if it is set.
+    if temperature is None:
+        return PromptAgentDefinition(model=model, instructions=instructions, tools=[search_tool, openapi_tool])
     return PromptAgentDefinition(
         model=model,
         instructions=instructions,
@@ -123,114 +145,160 @@ def build_definition(
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+@dataclass(frozen=True)
+class _Inputs:
+    """Everything needed to build the agent definition, loaded and validated up front."""
+
+    settings: Settings
+    instructions: str
+    spec: dict[str, Any]
+    use_connection: bool
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Provision the Contoso support agent in Foundry.")
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the definition without calling Azure.",
     )
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def _configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     # Keep our INFO messages but silence per-request HTTP/credential logging from the Azure SDKs.
     for noisy in ("azure", "httpx", "httpx2"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
-    from orchestrator.config import (
-        OPENAPI_SPEC_PATH,
-        SYSTEM_PROMPT_PATH,
-        ConfigError,
-        Settings,
+
+def _load_inputs(dry_run: bool) -> _Inputs:
+    """Load settings, instructions, and the prepared OpenAPI spec. Raises ConfigError on any problem."""
+    settings = Settings.from_env()
+    required = [
+        "agent_name",
+        "model_deployment_name",
+        "search_index_name",
+        "order_api_base_url",
+    ]
+    if not dry_run:
+        required += ["foundry_project_endpoint", "search_connection_name"]
+    settings.require(*required)
+
+    use_connection = bool(settings.order_api_connection_name)
+    raw_spec = json.loads(OPENAPI_SPEC_PATH.read_text(encoding="utf-8"))
+    try:
+        spec = prepare_openapi_spec(raw_spec, settings.required_str("order_api_base_url"), use_connection)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    instructions = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    return _Inputs(settings, instructions, spec, use_connection)
+
+
+def _definition(inputs: _Inputs, search_connection_id: str, order_api_connection_id: Optional[str]):
+    s = inputs.settings
+    return build_definition(
+        model=s.model_deployment_name,
+        instructions=inputs.instructions,
+        temperature=s.agent_temperature,
+        search_connection_id=search_connection_id,
+        index_name=s.search_index_name,
+        top_k=s.search_top_k,
+        openapi_spec=inputs.spec,
+        order_api_connection_id=order_api_connection_id,
     )
 
-    try:
-        settings = Settings.from_env()
-        required = [
-            "agent_name",
-            "model_deployment_name",
-            "search_index_name",
-            "order_api_base_url",
-        ]
-        if not args.dry_run:
-            required += ["foundry_project_endpoint", "search_connection_name"]
-        settings.require(*required)
-    except ConfigError as exc:
-        print(f"Configuration error: {exc}", file=sys.stderr)
-        return 2
 
-    instructions = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
-    raw_spec = json.loads(OPENAPI_SPEC_PATH.read_text(encoding="utf-8"))
-    use_connection = bool(settings.order_api_connection_name)
-    try:
-        spec = prepare_openapi_spec(raw_spec, settings.order_api_base_url, use_connection)  # type: ignore[arg-type]
-    except ValueError as exc:
-        print(f"Configuration error: {exc}", file=sys.stderr)
-        return 2
+def _dry_run(inputs: _Inputs) -> int:
+    order_id = DRY_RUN_PLACEHOLDER if inputs.use_connection else None
+    definition = _definition(inputs, DRY_RUN_PLACEHOLDER, order_id)
+    payload = {
+        "agent_name": inputs.settings.agent_name,
+        "definition": definition.as_dict(),
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
 
-    if args.dry_run:
-        definition = build_definition(
-            model=settings.model_deployment_name,
-            instructions=instructions,
-            temperature=settings.agent_temperature,
-            search_connection_id=DRY_RUN_PLACEHOLDER,
-            index_name=settings.search_index_name,
-            top_k=settings.search_top_k,
-            openapi_spec=spec,
-            order_api_connection_id=DRY_RUN_PLACEHOLDER if use_connection else None,
+
+def _log_http_error(exc: HttpResponseError) -> None:
+    if exc.status_code in (401, 403):
+        logger.error(
+            "HTTP %s from Foundry: your identity lacks the 'Azure AI User' role on the Foundry project "
+            "(project > Access control (IAM)); ask an admin to grant it. Details: %s",
+            exc.status_code,
+            exc.message,
         )
-        print(
-            json.dumps(
-                {"agent_name": settings.agent_name, "definition": definition.as_dict()},
-                indent=2,
-            )
+    elif exc.status_code == 404:
+        logger.error(
+            "HTTP 404 from Foundry: check FOUNDRY_PROJECT_ENDPOINT (Foundry > project > Overview). Details: %s",
+            exc.message,
         )
-        return 0
+    else:
+        logger.error(
+            "Foundry rejected the agent definition (HTTP %s): %s",
+            exc.status_code,
+            exc.message,
+        )
 
-    from azure.ai.projects import AIProjectClient
-    from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
-    from azure.identity import DefaultAzureCredential
 
+def _resolve_connections(project: AIProjectClient, inputs: _Inputs) -> tuple[str, Optional[str]]:
+    """Return (search connection id, order API connection id or None). Raises ResourceNotFoundError."""
+    s = inputs.settings
+    search_id = project.connections.get(s.required_str("search_connection_name")).id
+    order_id = (
+        project.connections.get(s.required_str("order_api_connection_name")).id if inputs.use_connection else None
+    )
+    return search_id, order_id
+
+
+def _provision(inputs: _Inputs) -> int:
+    endpoint = inputs.settings.required_str("foundry_project_endpoint")
     credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
-    project = AIProjectClient(endpoint=settings.foundry_project_endpoint, credential=credential)  # type: ignore[arg-type]
+    project = AIProjectClient(endpoint=endpoint, credential=credential)
     try:
-        try:
-            search_connection_id = project.connections.get(settings.search_connection_name).id  # type: ignore[arg-type]
-            order_connection_id = (
-                project.connections.get(settings.order_api_connection_name).id if use_connection else None  # type: ignore[arg-type]
-            )
-        except ResourceNotFoundError as exc:
-            print(
-                "Project connection not found. Check AZURE_SEARCH_CONNECTION_NAME / "
-                f"ORDER_API_CONNECTION_NAME in Foundry > Management center > Connected resources. ({exc.message})",
-                file=sys.stderr,
-            )
-            return 2
-
-        definition = build_definition(
-            model=settings.model_deployment_name,
-            instructions=instructions,
-            temperature=settings.agent_temperature,
-            search_connection_id=search_connection_id,
-            index_name=settings.search_index_name,
-            top_k=settings.search_top_k,
-            openapi_spec=spec,
-            order_api_connection_id=order_connection_id,
-        )
+        search_id, order_id = _resolve_connections(project, inputs)
         agent = project.agents.create_version(
-            agent_name=settings.agent_name,
-            definition=definition,
+            agent_name=inputs.settings.agent_name,
+            definition=_definition(inputs, search_id, order_id),
             description="Contoso customer support agent with RAG (Azure AI Search) and order-status tool.",
             metadata={"project": "ai-103-catch-all", "owner": "customer-support"},
         )
         logger.info("Agent ready: name=%s version=%s id=%s", agent.name, agent.version, agent.id)
         print(json.dumps({"name": agent.name, "version": agent.version, "id": agent.id}))
         return 0
+    except ResourceNotFoundError as exc:
+        print(
+            "Project connection not found. Check AZURE_SEARCH_CONNECTION_NAME / "
+            f"ORDER_API_CONNECTION_NAME in Foundry > Management center > Connected resources. ({exc.message})",
+            file=sys.stderr,
+        )
+        return 2
+    except ClientAuthenticationError as exc:
+        logger.exception(
+            "Could not get an Entra ID token (run 'az login' and 'az account set'): %s",
+            exc.message,
+        )
+        return 1
     except HttpResponseError as exc:
-        logger.error("Foundry rejected the agent definition: %s", exc.message)
+        _log_http_error(exc)
+        return 1
+    except AzureError as exc:  # DNS / network / malformed endpoint
+        logger.exception("Could not reach the Foundry project endpoint %s: %s", endpoint, exc)
         return 1
     finally:
         project.close()
         credential.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    _configure_logging()
+    try:
+        inputs = _load_inputs(args.dry_run)
+    except ConfigError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
+    return _dry_run(inputs) if args.dry_run else _provision(inputs)
 
 
 if __name__ == "__main__":

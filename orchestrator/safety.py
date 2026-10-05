@@ -1,4 +1,5 @@
-"""Layer 1 of the architecture: Azure AI Content Safety gate.
+"""
+Layer 1 of the architecture: Azure AI Content Safety gate.
 
 Two independent checks run on every user turn *before* the agent sees it:
 
@@ -11,9 +12,13 @@ Two independent checks run on every user turn *before* the agent sees it:
 Model output is also re-checked with text moderation (defence in depth on top
 of the Foundry deployment's own content filter).
 
-Authentication is keyless: a Microsoft Entra ID token for the
+Authentication is keyless by default: a Microsoft Entra ID token for the
 ``https://cognitiveservices.azure.com/.default`` scope. The calling identity
 needs the **Cognitive Services User** role on the Content Safety resource.
+
+Lab fallback: pass ``api_key`` (``CONTENT_SAFETY_API_KEY``) to authenticate with the
+resource key instead (``Ocp-Apim-Subscription-Key`` header) when that role cannot be
+granted. Not for production.
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ from azure.ai.contentsafety.models import (
     AnalyzeTextOutputType,
     TextCategory,
 )
-from azure.core.credentials import AccessToken, TokenCredential
+from azure.core.credentials import AccessToken, AzureKeyCredential, TokenCredential
 from azure.core.exceptions import AzureError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -100,6 +105,7 @@ class ContentSafetyGate:
         timeout_seconds: float = 10.0,
         session: Optional[requests.Session] = None,
         text_client: Optional[ContentSafetyClient] = None,
+        api_key: Optional[str] = None,
     ) -> None:
         if not endpoint:
             raise ValueError("Content Safety endpoint is required")
@@ -110,7 +116,16 @@ class ContentSafetyGate:
         self._max_input_chars = min(max_input_chars, PROMPT_SHIELDS_MAX_CHARS)
         self._timeout = timeout_seconds
         self._session = session or self._build_session()
-        self._text_client = text_client or ContentSafetyClient(self._endpoint, credential)
+        self._api_key = api_key or None
+        if self._api_key:
+            logger.warning(
+                "Using CONTENT_SAFETY_API_KEY for Azure AI Content Safety (lab fallback). "
+                "Remove it and grant 'Cognitive Services User' when possible."
+            )
+        client_credential: AzureKeyCredential | TokenCredential = (
+            AzureKeyCredential(self._api_key) if self._api_key else credential
+        )
+        self._text_client = text_client or ContentSafetyClient(self._endpoint, client_credential)
         self._token: Optional[AccessToken] = None
 
     # ------------------------------------------------------------------ #
@@ -197,6 +212,11 @@ class ContentSafetyGate:
         session.mount("https://", HTTPAdapter(max_retries=retry))
         return session
 
+    def _auth_headers(self) -> dict[str, str]:
+        if self._api_key:
+            return {"Ocp-Apim-Subscription-Key": self._api_key}
+        return {"Authorization": f"Bearer {self._bearer_token()}"}
+
     def _bearer_token(self) -> str:
         if self._token is None or self._token.expires_on - 120 <= time.time():
             self._token = self._credential.get_token(COGNITIVE_SERVICES_SCOPE)
@@ -210,14 +230,13 @@ class ContentSafetyGate:
                 url,
                 params={"api-version": PROMPT_SHIELDS_API_VERSION},
                 json=body,
-                headers={
-                    "Authorization": f"Bearer {self._bearer_token()}",
-                    "Content-Type": "application/json",
-                },
+                headers={**self._auth_headers(), "Content-Type": "application/json"},
                 timeout=self._timeout,
             )
         except (requests.RequestException, AzureError) as exc:
             raise SafetyServiceError(f"Prompt Shields request failed: {exc}") from exc
+        if response.status_code in (401, 403):
+            raise SafetyServiceError(f"Prompt Shields returned HTTP {response.status_code}: {self._auth_hint()}")
         if response.status_code != 200:
             raise SafetyServiceError(f"Prompt Shields returned HTTP {response.status_code}: {response.text[:300]}")
         try:
@@ -235,6 +254,9 @@ class ContentSafetyGate:
                 )
             )
         except AzureError as exc:
+            status = getattr(exc, "status_code", None)
+            if status in (401, 403):
+                raise SafetyServiceError(f"Text moderation returned HTTP {status}: {self._auth_hint()}") from exc
             raise SafetyServiceError(f"Text moderation failed: {exc}") from exc
 
         severities = {
@@ -251,6 +273,17 @@ class ContentSafetyGate:
                 severities,
             )
         return SafetyVerdict(True, SafetyCategory.SAFE, "", severities)
+
+    def _auth_hint(self) -> str:
+        if self._api_key:
+            return (
+                "the CONTENT_SAFETY_API_KEY was rejected; "
+                "copy KEY 1 from the Content Safety resource > Keys and Endpoint."
+            )
+        return (
+            "your identity lacks the 'Cognitive Services User' role on the Content Safety resource "
+            "(ask an admin, or set CONTENT_SAFETY_API_KEY as a lab fallback)."
+        )
 
     def _on_service_error(self, exc: SafetyServiceError) -> SafetyVerdict:
         logger.error("Content Safety unavailable: %s", exc)

@@ -15,3 +15,16 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
 ignore = ["UP007", "UP045"]
+
+[tool.ruff.lint.per-file-ignores]
+# CLI error handlers log a one-line, actionable hint on purpose; a traceback would bury it.
+"scripts/provision_agent.py" = ["TRY400"]
+
+[tool.pyright]
+# Picked up by Pylance (VS Code) and the pyright CLI.
+include = ["orchestrator", "scripts", "src", "tests"]
+extraPaths = ["src"]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
+pythonVersion = "3.11"

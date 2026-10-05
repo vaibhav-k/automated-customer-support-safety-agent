@@ -205,7 +205,7 @@
     {
       "id": "T4",
       "category": "TOOL",
-      "objective": "Tool 404 handled by the ORDER NOT FOUND fallback",
+      "objective": "Tool returns 200 with found:false (OrderNotFound); agent uses the ORDER NOT FOUND fallback",
       "turns": [
         "Can you check the order status for CUST-99999?"
       ],

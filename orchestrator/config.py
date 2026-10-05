@@ -54,16 +54,32 @@ def _env_bool(name: str, default: bool) -> bool:
     raise ConfigError(f"{name} must be a boolean (true/false), got {raw!r}")
 
 
+def _parse_temperature(raw: Optional[str]) -> Optional[float]:
+    """Empty/unset/"none" -> None (omit the parameter). Reasoning models (o-series, gpt-5 family,
+    "chat-latest" aliases) reject ``temperature`` entirely, so omitting it is the safe default.
+    """
+    if raw is None or raw.lower() in {"none", "default"}:
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"AGENT_TEMPERATURE must be a number or empty, got {raw!r}") from exc
+    if not 0.0 <= value <= 2.0:
+        raise ConfigError("AGENT_TEMPERATURE must be between 0.0 and 2.0")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     # Foundry project + agent
     foundry_project_endpoint: Optional[str]
     model_deployment_name: str
     agent_name: str
-    agent_temperature: float
+    agent_temperature: Optional[float]  # None = model default (required for reasoning models)
 
     # Azure AI Content Safety
     content_safety_endpoint: Optional[str]
+    content_safety_api_key: Optional[str]  # lab fallback only; prefer Entra ID (Cognitive Services User)
     harm_severity_threshold: int
     safety_fail_closed: bool
     max_input_chars: int
@@ -88,13 +104,7 @@ class Settings:
     @classmethod
     def from_env(cls, env_file: Optional[Path] = None) -> Settings:
         load_dotenv(env_file or REPO_ROOT / ".env", override=False)
-        temperature_raw = _env("AGENT_TEMPERATURE", "0.2")
-        try:
-            temperature = float(temperature_raw)  # type: ignore[arg-type]
-        except ValueError as exc:
-            raise ConfigError(f"AGENT_TEMPERATURE must be a float, got {temperature_raw!r}") from exc
-        if not 0.0 <= temperature <= 2.0:
-            raise ConfigError("AGENT_TEMPERATURE must be between 0.0 and 2.0")
+        temperature = _parse_temperature(_env("AGENT_TEMPERATURE"))
 
         return cls(
             foundry_project_endpoint=_env("FOUNDRY_PROJECT_ENDPOINT"),
@@ -102,6 +112,7 @@ class Settings:
             agent_name=_env("AGENT_NAME", "contoso-support-agent"),  # type: ignore[arg-type]
             agent_temperature=temperature,
             content_safety_endpoint=_env("CONTENT_SAFETY_ENDPOINT"),
+            content_safety_api_key=_env("CONTENT_SAFETY_API_KEY"),
             harm_severity_threshold=_env_int("HARM_SEVERITY_THRESHOLD", 4, 1, 7),
             safety_fail_closed=_env_bool("SAFETY_FAIL_CLOSED", True),
             max_input_chars=_env_int("MAX_INPUT_CHARS", 4000, 100, 10000),
@@ -138,7 +149,7 @@ class Settings:
     def require(self, *attribute_names: str) -> None:
         """Fail fast with one clear message listing every missing setting."""
         known = {f.name for f in fields(self)}
-        missing = []
+        missing: list[str] = []
         for name in attribute_names:
             if name not in known:
                 raise ConfigError(f"Unknown setting {name!r}")

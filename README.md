@@ -27,30 +27,30 @@ One small, working system exercises the scenarios the exam tests most heavily:
                          └──────────────┬───────────────┘
                                         │ every turn
                                         ▼
-┌───────────────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────────────────────────┐
 │ 1. Azure AI Content Safety (Filter)                         orchestrator/safety.py │
 │    • Prompt Shields  POST /contentsafety/text:shieldPrompt   ◄── catches prompt    │
 │        userPromptAnalysis  → direct jailbreak / injection        injections        │
 │        documentsAnalysis   → indirect attacks in attachments                       │
-│    • Text moderation POST /contentsafety/text:analyze (Hate/Sexual/Violence/      │
+│    • Text moderation POST /contentsafety/text:analyze (Hate/Sexual/Violence/       │
 │        SelfHarm, block at severity ≥ HARM_SEVERITY_THRESHOLD)                      │
 │    • Fail-closed if the service is unreachable           RBAC: Cognitive Services  │
 │                                                                User                │
-└───────────────────────────────────────┬───────────────────────────────────────────┘
+└───────────────────────────────────────┬────────────────────────────────────────────┘
                                         │ (safe input only)
                                         ▼
-┌───────────────────────────────────────────────────────────────────────────────────┐
+┌─────────────────────────────────────────────────────────────────────────────────────┐
 │ 2. Azure AI Foundry Agent (Core Logic)                 orchestrator/agent_client.py │
-│    • Prompt agent "contoso-support-agent" (versioned) – scripts/provision_agent.py │
-│    • Instructions: agent/system_prompt.txt  ·  model: gpt-4.1-mini, temp 0.2       │
-│    • Conversations API = server-side memory; Responses API + agent_reference       │
-│    • Foundry Guardrail on model + agent: user prompt attacks, indirect attacks     │
-│      (incl. TOOL RESPONSES), harm categories, protected material                   │
-│                                                         RBAC: Azure AI User        │
-└───────────┬───────────────────────────────────────────────────────┬───────────────┘
+│    • Prompt agent "contoso-support-agent" (versioned) – scripts/provision_agent.py  │
+│    • Instructions: agent/system_prompt.txt  ·  model: gpt-4.1-mini, temp 0.2        │
+│    • Conversations API = server-side memory; Responses API + agent_reference        │
+│    • Foundry Guardrail on model + agent: user prompt attacks, indirect attacks      │
+│      (incl. TOOL RESPONSES), harm categories, protected material                    │
+│                                                         RBAC: Azure AI User         │
+└───────────┬───────────────────────────────────────────────────────┬─────────────────┘
             │ (Tool Call)                                           │ (Tool Call)
             ▼                                                       ▼
-┌───────────────────────────────────────┐   ┌───────────────────────────────────────┐
+┌───────────────────────────────────────┐   ┌─────────────────────────────────────────┐
 │ 3. Azure AI Search (RAG Knowledge Base)│   │ 4. Azure Function API (Action Executor)│
 │  index: contoso-policy-index           │   │  src/function_app.py (Python v2 model) │
 │  • content_vector 1536-d HNSW/cosine   │   │  GET /api/orders/{customerId}/status   │
@@ -63,7 +63,7 @@ One small, working system exercises the scenarios the exam tests most heavily:
 │   Reader (+ Search Service Contributor)│   │                                        │
 │  RBAC (search MI → Foundry):           │   │                                        │
 │   Cognitive Services OpenAI User       │   │                                        │
-└───────────────────────────────────────┘   └───────────────────────────────────────┘
+└────────────────────────────────────────┘   └────────────────────────────────────────┘
                                         │
                                         ▼
                     Output moderation (text:analyze) → reply to the user
@@ -173,7 +173,7 @@ python -m scripts.run_exam_checks
 | CUST-10005 | CON-500105 | Cancelled | GB-LND | |
 | CUST-10006 | CON-500106 | ReturnInitiated | DE-BE | |
 | CUST-10007 | CON-500107 | Refunded | US-CA | |
-| CUST-99999 | — | 404 | — | T4 (not found) |
+| CUST-99999 | — | 200 `found: false` (OrderNotFound) | — | T4 (not found) |
 
 ---
 

@@ -1,4 +1,5 @@
-"""Layer 2 of the architecture: invoke the Foundry agent.
+"""
+Layer 2 of the architecture: invoke the Foundry agent.
 
 Uses the Foundry Agent Service (``azure-ai-projects`` 2.x, GA ``v1`` REST API):
 
@@ -43,6 +44,32 @@ _CONTENT_FILTER_MARKERS = (
 )
 
 
+def _describe_api_error(exc: Exception) -> str:
+    """Add an actionable hint to common auth / not-found failures from the Foundry endpoint."""
+    status = getattr(exc, "status_code", None)
+    if status in (401, 403):
+        return (
+            f"{exc} -> HTTP {status}: your identity needs the 'Azure AI User' role on the Foundry project "
+            "(check the project's Access control (IAM), or ask an admin). Run 'az login' if the token is missing."
+        )
+    if status == 400 and "tool_user_error" in str(exc):
+        return (
+            f"{exc} -> an agent tool call failed (e.g. the OpenAPI tool got a non-2xx response), which aborts "
+            "the whole run. Make the API return HTTP 200 for business errors such as 'not found'."
+        )
+    if status == 400 and "unsupported parameter" in str(exc).lower():
+        return (
+            f"{exc} -> the model deployment rejects a parameter set on the agent. For 'temperature', "
+            "clear AGENT_TEMPERATURE in .env and re-run 'python -m scripts.provision_agent'."
+        )
+    if status == 404:
+        return (
+            f"{exc} -> HTTP 404: check FOUNDRY_PROJECT_ENDPOINT and that AGENT_NAME exists "
+            "(run 'python -m scripts.provision_agent')."
+        )
+    return str(exc)
+
+
 def _is_content_filter(code: Any, message: Any) -> bool:
     haystack = f"{code or ''} {message or ''}".lower()
     return any(marker in haystack for marker in _CONTENT_FILTER_MARKERS)
@@ -82,11 +109,8 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
 
-def parse_response(response: Any) -> AgentReply:
-    """Convert an OpenAI ``Response`` object into an :class:`AgentReply`.
-
-    Kept as a pure function so it can be unit-tested without Azure.
-    """
+def _raise_for_status(response: Any) -> None:
+    """Translate failed / incomplete run states into typed exceptions."""
     status = _get(response, "status")
     if status == "failed":
         error = _get(response, "error")
@@ -101,47 +125,70 @@ def parse_response(response: Any) -> AgentReply:
             raise ContentFilterBlockedError("Completion stopped by the deployment content filter.")
         logger.warning("Agent response incomplete: %s", reason)
 
+
+def _url_citations(part: Any) -> list[Citation]:
+    citations = []
+    for annotation in _get(part, "annotations", []) or []:
+        url = _get(annotation, "url", "") or ""
+        if _get(annotation, "type") == "url_citation" and url:
+            citations.append(Citation(title=_get(annotation, "title", "") or url, url=url))
+    return citations
+
+
+def _message_parts(item: Any) -> list[Any]:
+    """The ``output_text`` content parts of a message output item."""
+    return [part for part in (_get(item, "content", []) or []) if _get(part, "type") == "output_text"]
+
+
+def _tool_call_label(item: Any) -> str:
+    # e.g. azure_ai_search_call, openapi_call, function_call, mcp_call ...
+    item_type = _get(item, "type", "")
+    name = _get(item, "name")
+    return f"{item_type}:{name}" if name else item_type
+
+
+def _usage(response: Any) -> dict[str, int]:
+    usage_obj = _get(response, "usage")
+    values = {key: _get(usage_obj, key) for key in ("input_tokens", "output_tokens", "total_tokens")}
+    return {key: value for key, value in values.items() if isinstance(value, int)}
+
+
+def _dedupe(citations: list[Citation]) -> list[Citation]:
+    unique: dict[str, Citation] = {}
+    for citation in citations:
+        unique.setdefault(citation.url, citation)
+    return list(unique.values())
+
+
+def parse_response(response: Any) -> AgentReply:
+    """Convert an OpenAI ``Response`` object into an :class:`AgentReply`.
+
+    Kept as a pure function so it can be unit-tested without Azure.
+    """
+    _raise_for_status(response)
+
     texts: list[str] = []
     citations: list[Citation] = []
     tool_calls: list[str] = []
-    seen_urls: set[str] = set()
-
     for item in _get(response, "output", []) or []:
         item_type = _get(item, "type", "")
         if item_type == "message":
-            for part in _get(item, "content", []) or []:
-                if _get(part, "type") != "output_text":
-                    continue
+            for part in _message_parts(item):
                 texts.append(_get(part, "text", "") or "")
-                for annotation in _get(part, "annotations", []) or []:
-                    if _get(annotation, "type") != "url_citation":
-                        continue
-                    url = _get(annotation, "url", "") or ""
-                    if url and url not in seen_urls:
-                        seen_urls.add(url)
-                        citations.append(Citation(title=_get(annotation, "title", "") or url, url=url))
+                citations.extend(_url_citations(part))
         elif item_type and item_type != "reasoning":
-            # e.g. azure_ai_search_call, openapi_call, function_call, mcp_call ...
-            name = _get(item, "name")
-            tool_calls.append(f"{item_type}:{name}" if name else item_type)
+            tool_calls.append(_tool_call_label(item))
 
     text = "\n".join(t for t in texts if t).strip() or (_get(response, "output_text", "") or "").strip()
     if not text:
         raise AgentInvocationError("Agent returned no text output.")
 
-    usage_obj = _get(response, "usage")
-    usage = {}
-    for key in ("input_tokens", "output_tokens", "total_tokens"):
-        value = _get(usage_obj, key)
-        if isinstance(value, int):
-            usage[key] = value
-
     return AgentReply(
         text=text,
         response_id=_get(response, "id", "") or "",
-        citations=citations,
+        citations=_dedupe(citations),
         tool_calls=tool_calls,
-        usage=usage,
+        usage=_usage(response),
     )
 
 
@@ -175,7 +222,7 @@ class SupportAgentClient:
         try:
             conversation = self._openai.conversations.create()
         except (APIError, AzureError) as exc:
-            raise AgentInvocationError(f"Could not create conversation: {exc}") from exc
+            raise AgentInvocationError(f"Could not create conversation: {_describe_api_error(exc)}") from exc
         logger.info("Conversation created: %s", conversation.id)
         return conversation.id
 
@@ -200,7 +247,7 @@ class SupportAgentClient:
         except APIError as exc:
             if _is_content_filter(getattr(exc, "code", None), str(exc)):
                 raise ContentFilterBlockedError(f"Blocked by the deployment content filter: {exc}") from exc
-            raise AgentInvocationError(f"Agent call failed: {exc}") from exc
+            raise AgentInvocationError(f"Agent call failed: {_describe_api_error(exc)}") from exc
         except AzureError as exc:  # e.g. ClientAuthenticationError from the token provider
             raise AgentInvocationError(f"Agent call failed (Azure credential/transport): {exc}") from exc
         reply = parse_response(response)
