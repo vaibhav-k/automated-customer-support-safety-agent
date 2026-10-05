@@ -1,0 +1,17 @@
+{
+  "search": "*",
+  "count": true,
+  "vectorQueries": [
+    {
+      "kind": "text",
+      "text": "*",
+      "fields": "content_vector"
+    }
+  ],
+  "queryType": "semantic",
+  "semanticConfiguration": "contoso-semantic-config",
+  "captions": "extractive",
+  "answers": "extractive|count-3",
+  "queryLanguage": "en-us",
+  "queryRewrites": "generative"
+}

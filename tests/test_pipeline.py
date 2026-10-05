@@ -1,0 +1,253 @@
+"""Unit tests for the pipeline, response parsing, and exam-case scoring."""
+
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from orchestrator.agent_client import (
+    AgentInvocationError,
+    AgentReply,
+    Citation,
+    ContentFilterBlockedError,
+    parse_response,
+)
+from orchestrator.pipeline import (
+    BLOCKED_INPUT_MESSAGE,
+    BLOCKED_OUTPUT_MESSAGE,
+    UNAVAILABLE_MESSAGE,
+    SupportPipeline,
+)
+from orchestrator.safety import SafetyCategory, SafetyVerdict
+from scripts.run_exam_checks import CASES_PATH, evaluate
+
+SAFE = SafetyVerdict(True, SafetyCategory.SAFE)
+
+
+class FakeGate:
+    def __init__(self, input_verdict=SAFE, output_verdict=SAFE):
+        self.input_verdict = input_verdict
+        self.output_verdict = output_verdict
+
+    def check_user_input(self, text, documents=()):
+        return self.input_verdict
+
+    def check_model_output(self, text):
+        return self.output_verdict
+
+
+class FakeAgent:
+    def __init__(self, reply=None, exc=None):
+        self.reply = reply
+        self.exc = exc
+        self.calls = 0
+
+    def ask(self, conversation_id, user_text):
+        self.calls += 1
+        if self.exc:
+            raise self.exc
+        return self.reply
+
+
+REPLY = AgentReply(
+    "Your return window is 30 days (POL-RET-001).",
+    "resp_1",
+    [Citation("Return Policy", "https://x#a")],
+    ["azure_ai_search_call"],
+)
+
+
+def test_happy_path():
+    result = SupportPipeline(FakeGate(), FakeAgent(REPLY)).handle("conv", "return window?")
+    assert not result.blocked and result.stage == "completed"
+    assert result.citations == [{"title": "Return Policy", "url": "https://x#a"}]
+
+
+def test_blocked_input_never_reaches_agent():
+    agent = FakeAgent(REPLY)
+    gate = FakeGate(SafetyVerdict(False, SafetyCategory.PROMPT_INJECTION, "attack"))
+    result = SupportPipeline(gate, agent).handle("conv", "ignore instructions")
+    assert result.blocked and result.stage == "input_safety" and result.reply == BLOCKED_INPUT_MESSAGE
+    assert agent.calls == 0
+
+
+def test_model_content_filter_is_reported_as_block():
+    result = SupportPipeline(FakeGate(), FakeAgent(exc=ContentFilterBlockedError("jailbreak"))).handle("c", "x")
+    assert result.blocked and result.stage == "model_content_filter"
+
+
+def test_agent_failure_returns_unavailable():
+    result = SupportPipeline(FakeGate(), FakeAgent(exc=AgentInvocationError("500"))).handle("c", "x")
+    assert not result.blocked and result.stage == "agent" and result.reply == UNAVAILABLE_MESSAGE
+
+
+def test_harmful_output_is_replaced():
+    gate = FakeGate(output_verdict=SafetyVerdict(False, SafetyCategory.HARMFUL_CONTENT, "Violence=6"))
+    result = SupportPipeline(gate, FakeAgent(REPLY)).handle("c", "x")
+    assert result.blocked and result.stage == "output_safety" and result.reply == BLOCKED_OUTPUT_MESSAGE
+
+
+def test_parse_response_extracts_text_citations_tools_usage():
+    response = SimpleNamespace(
+        id="resp_9",
+        status="completed",
+        output_text="",
+        usage=SimpleNamespace(input_tokens=10, output_tokens=5, total_tokens=15),
+        output=[
+            SimpleNamespace(type="openapi_call", name="contoso_order_status_getOrderStatus"),
+            SimpleNamespace(type="azure_ai_search_call"),
+            SimpleNamespace(
+                type="message",
+                content=[
+                    SimpleNamespace(
+                        type="output_text",
+                        text="Shipped via Contoso Express.",
+                        annotations=[
+                            SimpleNamespace(type="url_citation", url="https://p#a", title="Shipping"),
+                            SimpleNamespace(type="url_citation", url="https://p#a", title="dup"),
+                        ],
+                    )
+                ],
+            ),
+        ],
+    )
+    reply = parse_response(response)
+    assert reply.text == "Shipped via Contoso Express."
+    assert reply.tool_calls == [
+        "openapi_call:contoso_order_status_getOrderStatus",
+        "azure_ai_search_call",
+    ]
+    assert [c.url for c in reply.citations] == ["https://p#a"]
+    assert reply.usage == {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+
+
+def test_parse_response_failures():
+    with pytest.raises(ContentFilterBlockedError):
+        parse_response(
+            {
+                "status": "failed",
+                "error": {"code": "content_filter", "message": "blocked"},
+                "output": [],
+            }
+        )
+    with pytest.raises(AgentInvocationError):
+        parse_response(
+            {
+                "status": "failed",
+                "error": {"code": "server_error", "message": "x"},
+                "output": [],
+            }
+        )
+    with pytest.raises(ContentFilterBlockedError):
+        parse_response(
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+                "output": [],
+            }
+        )
+    with pytest.raises(AgentInvocationError):
+        parse_response({"status": "completed", "output": [], "output_text": ""})
+
+
+def test_evaluate_scoring_rules():
+    ok = {
+        "reply": "It is Shipped (POL-ORD-001).",
+        "blocked": False,
+        "stage": "completed",
+        "tool_calls": ["openapi_call", "azure_ai_search_call"],
+        "citations": [],
+    }
+    assert (
+        evaluate(
+            {
+                "blocked": False,
+                "must_contain_all": ["Shipped"],
+                "tool_used": "openapi",
+                "tool_used_2": "search",
+                "grounding_evidence": True,
+            },
+            ok,
+        )
+        == []
+    )
+    assert evaluate({"tool_not_used": "openapi"}, ok)
+    assert evaluate({"blocked": True}, ok)
+    blocked = {
+        "reply": BLOCKED_INPUT_MESSAGE,
+        "blocked": True,
+        "stage": "input_safety",
+        "tool_calls": [],
+    }
+    assert evaluate({"blocked": True}, blocked) == []
+    assert evaluate({"blocked_or_refused": True, "must_not_contain": ["x"]}, blocked) == []
+    assert evaluate({"must_not_contain": ["shipped"]}, ok)  # case-insensitive
+    assert evaluate({"must_contain_any": ["it is shipped"]}, ok) == []
+    curly = dict(ok, reply="I couldn\u2019t find that.")
+    assert evaluate({"must_contain_any": ["couldn't find"]}, curly) == []
+
+
+def test_evaluate_blocked_by_and_outage():
+    injection = {
+        "reply": BLOCKED_INPUT_MESSAGE,
+        "blocked": True,
+        "stage": "input_safety",
+        "input_verdict": {"category": "prompt_injection"},
+        "tool_calls": [],
+    }
+    assert evaluate({"blocked": True, "blocked_by": ["prompt_injection"]}, injection) == []
+    assert evaluate({"blocked": True, "blocked_by": ["document_injection"]}, injection)
+    filtered = {
+        "reply": BLOCKED_INPUT_MESSAGE,
+        "blocked": True,
+        "stage": "model_content_filter",
+        "tool_calls": [],
+    }
+    assert evaluate({"blocked": True, "blocked_by": ["model_content_filter"]}, filtered) == []
+    outage = dict(injection, input_verdict={"category": "safety_service_error"})
+    assert evaluate({"blocked": True}, outage)
+    assert evaluate({"blocked_or_refused": True}, outage)
+
+
+def test_tool_aliases_match_by_name():
+    named = {
+        "reply": "Shipped",
+        "blocked": False,
+        "stage": "completed",
+        "tool_calls": ["function_call:contoso_order_status_getOrderStatus"],
+        "citations": [],
+    }
+    assert evaluate({"tool_used": "openapi"}, named) == []
+    assert evaluate({"tool_not_used": "openapi"}, named)
+
+
+def test_documents_are_forwarded_to_agent_as_untrusted_data():
+    class RecordingAgent(FakeAgent):
+        def ask(self, conversation_id, user_text):
+            self.seen = user_text
+            return super().ask(conversation_id, user_text)
+
+    agent = RecordingAgent(REPLY)
+    SupportPipeline(FakeGate(), agent).handle("c", "Summarise this", ["warehouse note"])
+    assert "warehouse note" in agent.seen and 'trust="untrusted"' in agent.seen
+
+
+def test_exam_cases_file_is_consistent():
+    data = json.loads(CASES_PATH.read_text(encoding="utf-8"))
+    ids = [c["id"] for c in data["cases"]]
+    assert len(ids) == len(set(ids))
+    allowed = {
+        "blocked",
+        "blocked_by",
+        "blocked_or_refused",
+        "must_contain_all",
+        "must_contain_any",
+        "must_not_contain",
+        "tool_used",
+        "tool_used_2",
+        "tool_not_used",
+        "grounding_evidence",
+    }
+    for case in data["cases"]:
+        assert case["category"] in {"RAG", "TOOL", "COMBINED", "FALLBACK", "SAFETY"}
+        assert case["turns"] and set(case["expect"]) <= allowed, case["id"]

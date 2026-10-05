@@ -1,0 +1,242 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Contoso Order Status API",
+    "description": "Read-only API hosted on Azure Functions that returns the current status of a Contoso customer's order. Used by the Contoso Support Assistant agent as an OpenAPI tool.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Contoso Customer Experience Engineering",
+      "email": "cx-engineering@contoso.example"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://contoso-order-api.azurewebsites.net/api",
+      "description": "Overridden at provisioning time by ORDER_API_BASE_URL (scripts/provision_agent.py)."
+    }
+  ],
+  "security": [
+    {
+      "functionKey": []
+    }
+  ],
+  "paths": {
+    "/orders/{customerId}/status": {
+      "get": {
+        "operationId": "getOrderStatus",
+        "summary": "Get the status of a customer's order",
+        "description": "Returns the status of the customer's most recent order, or of a specific order when orderId is supplied. Call this only when the customer asks about order status, tracking, carrier, or delivery date and has provided a customerId in the format CUST-12345.",
+        "tags": [
+          "Orders"
+        ],
+        "parameters": [
+          {
+            "name": "customerId",
+            "in": "path",
+            "required": true,
+            "description": "The customer's unique ID: 'CUST-' followed by exactly five digits, e.g. CUST-10001.",
+            "schema": {
+              "type": "string",
+              "pattern": "^CUST-[0-9]{5}$",
+              "example": "CUST-10001"
+            }
+          },
+          {
+            "name": "orderId",
+            "in": "query",
+            "required": false,
+            "description": "Optional specific order ID: 'CON-' followed by exactly six digits, e.g. CON-500101. Omit to get the most recent order.",
+            "schema": {
+              "type": "string",
+              "pattern": "^CON-[0-9]{6}$",
+              "example": "CON-500101"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order status found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderStatusResponse"
+                },
+                "example": {
+                  "customerId": "CUST-10001",
+                  "orderId": "CON-500101",
+                  "status": "Shipped",
+                  "placedOn": "2026-09-28",
+                  "region": "US-WA",
+                  "carrier": "Contoso Express",
+                  "trackingNumber": "CX1Z99A0001",
+                  "estimatedDelivery": "2026-10-07",
+                  "lastUpdated": "2026-10-03T14:22:00Z",
+                  "itemCount": 2,
+                  "otherOrderIds": [
+                    "CON-500077"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The customerId or orderId is malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "InvalidCustomerId",
+                  "message": "customerId must match the format CUST-12345 (CUST- followed by 5 digits)."
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid function key (returned by the Azure Functions host with an empty body)."
+          },
+          "404": {
+            "description": "No order exists for the given customerId (and orderId, if supplied).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "OrderNotFound",
+                  "message": "No order was found for customer CUST-99999."
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "InternalError",
+                  "message": "The order service is temporarily unavailable."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "functionKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-functions-key",
+        "description": "Azure Functions function key. Supplied by a Foundry 'Custom keys' project connection whose key name is x-functions-key."
+      }
+    },
+    "schemas": {
+      "OrderStatusResponse": {
+        "type": "object",
+        "description": "Status payload for a single order.",
+        "required": [
+          "customerId",
+          "orderId",
+          "status"
+        ],
+        "properties": {
+          "customerId": {
+            "type": "string",
+            "description": "Customer ID that was looked up.",
+            "pattern": "^CUST-[0-9]{5}$"
+          },
+          "orderId": {
+            "type": "string",
+            "description": "Order ID.",
+            "pattern": "^CON-[0-9]{6}$"
+          },
+          "status": {
+            "type": "string",
+            "description": "Current order status.",
+            "enum": [
+              "Processing",
+              "Shipped",
+              "Delivered",
+              "Cancelled",
+              "ReturnInitiated",
+              "Refunded"
+            ]
+          },
+          "placedOn": {
+            "type": "string",
+            "format": "date",
+            "description": "Date the order was placed (YYYY-MM-DD)."
+          },
+          "region": {
+            "type": "string",
+            "description": "ISO 3166-2 style shipping region code, e.g. US-WA, US-AK, CA-ON, GB-LND, DE-BE."
+          },
+          "carrier": {
+            "type": "string",
+            "nullable": true,
+            "description": "Carrier name once the order has shipped."
+          },
+          "trackingNumber": {
+            "type": "string",
+            "nullable": true,
+            "description": "Carrier tracking number once the order has shipped."
+          },
+          "estimatedDelivery": {
+            "type": "string",
+            "format": "date",
+            "nullable": true,
+            "description": "Estimated delivery date for orders not yet delivered."
+          },
+          "lastUpdated": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC timestamp of the last status change."
+          },
+          "itemCount": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of items in the order."
+          },
+          "otherOrderIds": {
+            "type": "array",
+            "description": "Other order IDs on the same customer account.",
+            "items": {
+              "type": "string",
+              "pattern": "^CON-[0-9]{6}$"
+            }
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": [
+          "error",
+          "message"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Machine-readable error code.",
+            "enum": [
+              "InvalidCustomerId",
+              "InvalidOrderId",
+              "OrderNotFound",
+              "InternalError"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable error description."
+          }
+        }
+      }
+    }
+  }
+}

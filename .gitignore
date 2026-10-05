@@ -1,0 +1,40 @@
+# Secrets & local settings
+.env
+src/local.settings.json
+*.publishsettings
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Azure Functions
+.python_packages/
+bin/
+obj/
+azurite/
+__azurite_db*__.json
+__blobstorage__/
+__queuestorage__/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Exam run reports
+exam_report*.json
+
+# Azure variables
+.azvars.ps1

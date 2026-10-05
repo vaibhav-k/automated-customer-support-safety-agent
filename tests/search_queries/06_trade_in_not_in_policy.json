@@ -1,0 +1,18 @@
+{
+  "search": "trade-in credit for old phones",
+  "count": true,
+  "vectorQueries": [
+    {
+      "kind": "text",
+      "text": "trade-in credit for old phones",
+      "fields": "content_vector",
+      "k": 5
+    }
+  ],
+  "queryType": "semantic",
+  "semanticConfiguration": "contoso-semantic-config",
+  "captions": "extractive",
+  "answers": "extractive|count-3",
+  "select": "title,url",
+  "top": 5
+}

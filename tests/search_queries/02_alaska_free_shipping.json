@@ -1,0 +1,18 @@
+{
+  "search": "Is shipping free to Alaska?",
+  "count": true,
+  "vectorQueries": [
+    {
+      "kind": "text",
+      "text": "Is shipping free to Alaska?",
+      "fields": "content_vector",
+      "k": 5
+    }
+  ],
+  "queryType": "semantic",
+  "semanticConfiguration": "contoso-semantic-config",
+  "captions": "extractive",
+  "answers": "extractive|count-3",
+  "select": "title,url",
+  "top": 5
+}

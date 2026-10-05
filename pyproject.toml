@@ -1,0 +1,17 @@
+[project]
+name = "automated-customer-support-safety-agent"
+version = "1.0.0"
+description = "AI-103 study project: Azure AI Foundry support agent with RAG, OpenAPI tooling, Content Safety and RBAC."
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["UP007", "UP045"]

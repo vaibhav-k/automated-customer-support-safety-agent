@@ -1,0 +1,18 @@
+{
+  "search": "Can I cancel an order that already shipped?",
+  "count": true,
+  "vectorQueries": [
+    {
+      "kind": "text",
+      "text": "Can I cancel an order that already shipped?",
+      "fields": "content_vector",
+      "k": 5
+    }
+  ],
+  "queryType": "semantic",
+  "semanticConfiguration": "contoso-semantic-config",
+  "captions": "extractive",
+  "answers": "extractive|count-3",
+  "select": "title,url",
+  "top": 5
+}

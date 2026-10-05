@@ -1,0 +1,10 @@
+# Orchestrator (client pipeline) + operational scripts.
+# The Azure Function App has its own requirements in src/requirements.txt.
+azure-identity>=1.19.0,<2.0.0
+azure-ai-projects>=2.0.0,<3.0.0
+openai>=1.109.0
+httpx>=0.27.0  # imported by early azure-ai-projects 2.x releases (2.0-2.2) but not declared as a dependency
+azure-ai-contentsafety>=1.0.0,<2.0.0
+azure-search-documents>=11.6.0,<13.0.0
+requests>=2.32.0,<3.0.0
+python-dotenv>=1.0.1,<2.0.0
