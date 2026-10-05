@@ -11,4 +11,4 @@ python-dotenv==1.2.4
 # Tracing (orchestrator/telemetry.py): OpenTelemetry SDK + Azure Monitor exporter. Off unless TRACING_MODE is set.
 opentelemetry-sdk==1.45.0
 azure-core-tracing-opentelemetry==1.0.0b13  # required by azure.ai.projects.telemetry.AIProjectInstrumentor
-azure-monitor-opentelemetry==1.8.2
+azure-monitor-opentelemetry==1.8.10
