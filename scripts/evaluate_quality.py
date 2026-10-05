@@ -1,4 +1,5 @@
-"""Score the agent's answers for groundedness, relevance and fabricated facts (AI-103: "Evaluate models and apps").
+"""
+Score the agent's answers for groundedness, relevance and fabricated facts (AI-103: "Evaluate models and apps").
 
 Reads the replies captured by ``run_exam_checks --report`` (so the agent is NOT called again) and scores every
 answered case with two kinds of evaluator:
@@ -177,7 +178,8 @@ Judge = Callable[..., dict[str, Any]]
 def build_judges(settings: Settings) -> tuple[Judge, Judge]:
     """Create the Groundedness and Relevance evaluators (keyless, Entra ID)."""
     try:
-        from azure.ai.evaluation import (
+        # Optional dependency (requirements-eval.txt), absent in CI: hence the targeted ignore.
+        from azure.ai.evaluation import (  # pyright: ignore[reportMissingImports]
             AzureOpenAIModelConfiguration,
             GroundednessEvaluator,
             RelevanceEvaluator,

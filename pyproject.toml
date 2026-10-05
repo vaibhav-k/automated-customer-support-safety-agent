@@ -28,3 +28,11 @@ venvPath = "."
 venv = ".venv"
 typeCheckingMode = "standard"
 pythonVersion = "3.11"
+
+[tool.mypy]
+exclude = ["^\\.venv/", "^build/", "^dist/"]
+
+[[tool.mypy.overrides]]
+# Optional dependency (requirements-eval.txt) without type information; absent in CI.
+module = ["azure.ai.evaluation", "azure.ai.evaluation.*"]
+ignore_missing_imports = true

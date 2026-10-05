@@ -1,0 +1,106 @@
+# Continuous integration: every push to main and every pull request must pass these offline checks.
+# Nothing here calls Azure — no secrets or service connections are needed.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  quality:
+    name: Lint, types, tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 = Azure Functions runtime used by src/; 3.14 = the local development interpreter.
+        python-version: ["3.11", "3.14"]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            src/requirements.txt
+
+      - name: Create .venv (pyproject's [tool.pyright] points at it)
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Ruff (lint)
+        run: ruff check . --output-format=github
+
+      - name: Ruff (format)
+        run: ruff format --check .
+
+      - name: mypy
+        run: mypy .
+
+      - name: Pyright (same engine as Pylance)
+        run: pyright
+
+      - name: Cognitive complexity (max 15 per function)
+        run: complexipy orchestrator scripts src --max-complexity-allowed 15 --quiet
+
+      - name: Unit tests
+        run: pytest --junitxml=pytest-results.xml
+
+      - name: Smoke - ingestion dry run (chunking only)
+        run: python -m scripts.ingest_policy --dry-run
+
+      - name: Smoke - agent definition dry run
+        env:
+          ORDER_API_BASE_URL: https://example-func.azurewebsites.net/api
+          ORDER_API_CONNECTION_NAME: contoso-order-api-key
+        run: python -m scripts.provision_agent --dry-run > /dev/null
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results-py${{ matrix.python-version }}
+          path: pytest-results.xml
+          if-no-files-found: ignore
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Scan tracked files for secrets and forbidden files
+        run: python -m scripts.check_secrets

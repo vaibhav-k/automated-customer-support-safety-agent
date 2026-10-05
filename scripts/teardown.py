@@ -42,7 +42,10 @@ Step = Callable[[], str]
 def _delete_agent(settings: Settings, credential: TokenCredential) -> str:
     from azure.ai.projects import AIProjectClient
 
-    with AIProjectClient(endpoint=settings.required_str("foundry_project_endpoint"), credential=credential) as project:
+    with AIProjectClient(
+        endpoint=settings.required_str("foundry_project_endpoint"),
+        credential=credential,
+    ) as project:
         try:
             project.agents.delete(agent_name=settings.agent_name)
         except ResourceNotFoundError:
@@ -90,7 +93,10 @@ def _run_step(label: str, step: Step) -> bool:
         print(f"  - {step()}")
         return True
     except HttpResponseError as exc:
-        print(f"  ! {label} failed (HTTP {exc.status_code}): {exc.message}", file=sys.stderr)
+        print(
+            f"  ! {label} failed (HTTP {exc.status_code}): {exc.message}",
+            file=sys.stderr,
+        )
     except AzureError as exc:
         print(f"  ! {label} failed: {exc}", file=sys.stderr)
     return False

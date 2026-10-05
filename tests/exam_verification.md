@@ -169,7 +169,7 @@ policies".* Run these once, then restore the configuration.
 | X2 | MUST | Same call with header `x-functions-key: <key>` | **HTTP 200** with `"status": "Shipped"` |
 | X3 | MUST | Remove your **Cognitive Services User** role on Content Safety, wait ~5 min, run S1 | Gate returns `safety_service_error` and **blocks** (fail-closed). Restore the role. |
 | X4 | SHOULD | Remove the search service MI's **Cognitive Services OpenAI User** role on the Foundry resource, run R1 | Search tool fails to vectorize the query → agent uses the TOOL UNAVAILABLE fallback (no fabricated policy). Restore the role. |
-| X5 | MUST | Search the repo for secrets: `git grep -inE "(x-functions-key\|api[_-]?key)\s*[:=]\s*['\"]?[A-Za-z0-9_+/=-]{20,}" -- . ":(exclude)*.md"` (case-insensitive; also covers `.ps1` and `*_API_KEY=` lines) | **No output** — keys live only in `.env` (ignored) and Foundry connections |
+| X5 | MUST | `python -m scripts.check_secrets` (also runs in CI on every push) | `0 finding(s)`: no key-like values in tracked files and no `.env`, `azvars.ps1` or `local.settings.json` committed. Keys live only in `.env` (ignored) and Foundry connections |
 | X6 | SHOULD | Azure portal → AI Search → **Settings → Keys** | API access control is **Role-based access control** (or **Both** during setup) |
 
 ---

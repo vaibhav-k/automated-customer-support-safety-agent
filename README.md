@@ -1,5 +1,7 @@
 # Automated Customer Support & Safety Agent
 
+[![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+
 A production-shaped **Microsoft Foundry (Azure AI Foundry)** project built as a "catch-all" lab for the
 **AI-103: Developing AI Apps and Agents on Azure** exam (*Azure AI Apps and Agents Developer Associate*).
 
@@ -93,6 +95,9 @@ not just this client. Defence in depth is the exam-preferred answer.
 automated_customer_support_safety_agent/
 ├── README.md                     ← you are here: overview, architecture, AI-103 study map
 ├── DEPLOYMENT.md                 ← portal + CLI deployment, RBAC, Guardrails/Prompt Shields
+├── .github/
+│   ├── workflows/ci.yml          ← CI: ruff, mypy, pyright, complexity, pytest, dry runs, secret scan
+│   └── dependabot.yml            ← weekly dependency / action update PRs
 ├── .env.example                  ← every setting the code reads (copy to .env)
 ├── .gitignore
 ├── LICENSE
@@ -130,7 +135,8 @@ automated_customer_support_safety_agent/
 │   ├── provision_agent.py        ← create a new agent version with Search + OpenAPI tools
 │   ├── run_exam_checks.py        ← run tests/exam_cases.json against the live deployment
 │   ├── evaluate_quality.py       ← groundedness / relevance judges + fabrication check on the replies
-│   └── teardown.py               ← delete the agent (all versions) and the index; prints RG delete commands
+│   ├── teardown.py               ← delete the agent (all versions) and the index; prints RG delete commands
+│   └── check_secrets.py          ← fail if secrets or .env/azvars.ps1 are tracked (CI + local)
 │
 └── tests/
     ├── exam_verification.md      ← strict AI-103 acceptance script (RAG, tools, safety, RBAC)
@@ -149,7 +155,7 @@ automated_customer_support_safety_agent/
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
-pytest                                   # 92 offline tests, no Azure resources required
+pytest                                   # 104 offline tests, no Azure resources required
 Copy-Item .env.example .env              # then follow DEPLOYMENT.md
 python -m scripts.ingest_policy
 python -m scripts.provision_agent
@@ -169,6 +175,17 @@ python -m scripts.run_exam_checks
 | `python -m scripts.teardown` / `--yes` | Show / delete the agent and the index, then print the resource-group delete commands |
 | `python -m scripts.run_exam_checks --only S1,S2,S3 --skip-input-gate` | Bypass the client gate to prove the Foundry guardrail (layer 1b) blocks attacks on its own |
 | `cd src; func start` | Run the order API locally on port 7071 |
+
+### Run the CI checks locally
+
+The same commands as `.github/workflows/ci.yml`, so a push doesn't surprise you:
+
+```powershell
+ruff check . ; ruff format --check . ; mypy . ; pyright
+complexipy orchestrator scripts src --max-complexity-allowed 15 --quiet
+pytest
+python -m scripts.check_secrets
+```
 
 ### Mock order data (served by the Function)
 
@@ -203,7 +220,7 @@ Skill-area weights are from the official AI-103 study guide. ✅ = implemented a
 | ✅ Configure safety filters, guardrails, risk detection, content moderation | `safety.py`; DEPLOYMENT Step 11 | Prompt Shields user vs. document attacks; severity thresholds; intervention points; annotate vs. block |
 | ✅ Govern agent behavior with constraints and tool-access controls | `system_prompt.txt`; OpenAPI `pattern`s | Parameter validation, "only the ID given in this conversation", no write operations exposed |
 | 📘 Monitor safety events and grounding quality; manage quotas/cost | DEPLOYMENT Step 13 observability | Tracing via Application Insights; token usage captured in `AgentReply.usage` |
-| 📘 CI/CD integration | `pytest` + `ruff` + idempotent scripts | Offline tests gate merges; `provision_agent.py` creates versioned agents from source |
+| ✅ Integrate Foundry projects with CI/CD pipelines | `.github/workflows/ci.yml`, `dependabot.yml` | Every push/PR runs lint, types, complexity, 100+ offline tests, agent-definition and ingestion dry runs, and a secret scan, with no Azure credentials needed. A deploy stage would use OIDC federated credentials (no stored secrets) to run `provision_agent.py`, which creates a new agent **version** |
 
 ### 2. Implement generative AI and agentic solutions (30–35%)
 
