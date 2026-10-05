@@ -1,2 +1,2 @@
 # Runtime dependencies for the Azure Function App (deployed from ./src)
-azure-functions>=1.21.0,<3.0.0
+azure-functions>=2.3.0,<3.0.0
