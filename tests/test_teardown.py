@@ -48,7 +48,11 @@ def test_dry_run_deletes_nothing(monkeypatch, capsys):
 
 def test_yes_runs_steps_and_reports_failures(monkeypatch, capsys):
     _settings(monkeypatch)
-    monkeypatch.setattr(teardown, "make_credential", lambda: type("C", (), {"close": lambda self: None})())
+    monkeypatch.setattr(
+        teardown,
+        "make_credential",
+        lambda: type("C", (), {"close": lambda self: None})(),
+    )
     monkeypatch.setattr(teardown, "_delete_agent", lambda s, c: "deleted agent 'contoso-support-agent'")
 
     def forbidden(_settings, _credential):

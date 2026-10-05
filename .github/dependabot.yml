@@ -1,0 +1,20 @@
+# Weekly dependency update PRs; CI runs on each one before you merge.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      azure-sdks:
+        patterns: ["azure-*", "openai"]
+      dev-tools:
+        patterns: ["pytest*", "ruff", "mypy", "pyright", "complexipy", "openapi-spec-validator"]
+  - package-ecosystem: pip
+    directory: /src
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
