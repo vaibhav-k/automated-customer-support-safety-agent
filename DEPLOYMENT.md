@@ -394,6 +394,18 @@ RBAC table; consider private endpoints for Foundry, Search, and the Function App
 
 ## Step 14 — Clean up
 
+First remove what the scripts created inside the services, then delete the Azure resources:
+
+```powershell
+python -m scripts.teardown            # dry run: lists the agent (all versions) and the index
+python -m scripts.teardown --yes      # deletes them; --keep-agent / --keep-index to skip one
+```
+
+Conversations are deleted by the CLI and `run_exam_checks` at the end of every run (the API has no "list"
+operation to find orphans). The script finishes by printing the `az group delete` commands — set
+`TEARDOWN_RESOURCE_GROUPS=rg-one,rg-two` in `.env` to fill in your names. Delete **every** group you created, e.g.
+the main one and the Function App's auto-created `<funcapp>_group`:
+
 ```powershell
 az group delete --name $RG --yes --no-wait
 ```

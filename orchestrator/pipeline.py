@@ -114,7 +114,7 @@ class SupportPipeline:
         try:
             reply = self._agent.ask(conversation_id, compose_agent_input(user_text, documents))
         except ContentFilterBlockedError as exc:
-            logger.warning("Blocked by deployment content filter: %s", exc)
+            logger.warning("%s", exc)
             return PipelineResult(BLOCKED_INPUT_MESSAGE, True, "model_content_filter", input_verdict)
         except AgentInvocationError as exc:
             logger.error("Agent invocation failed: %s", exc)

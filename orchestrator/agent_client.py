@@ -47,6 +47,36 @@ _CONTENT_FILTER_MARKERS = (
 )
 
 
+def _filter_entries(source: Any) -> list[Any]:
+    """The ``content_filters`` list from an openai APIError (``.body``), a run error dict, or a wrapper dict."""
+    body = getattr(source, "body", source)
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        body = body["error"]
+    filters = _get(body, "content_filters") or []
+    return [filters] if isinstance(filters, dict) else list(filters)
+
+
+def _triggered_label(category: str, verdict: Any) -> Optional[str]:
+    if not (_get(verdict, "filtered") or _get(verdict, "detected")):
+        return None
+    severity = _get(verdict, "severity")
+    return f"{category} ({severity})" if severity and severity != "safe" else category
+
+
+def _content_filter_summary(source: Any) -> str:
+    """Name the categories that tripped the content filter, e.g. "jailbreak" or "violence (medium)"."""
+    triggered: list[str] = []
+    for entry in _filter_entries(source):
+        results = _get(entry, "content_filter_results") or {}
+        if not isinstance(results, dict):
+            continue
+        for category, verdict in results.items():
+            label = _triggered_label(category, verdict)
+            if label and label not in triggered:
+                triggered.append(label)
+    return ", ".join(triggered) or "category not reported"
+
+
 def _describe_api_error(exc: Exception) -> str:
     """Add an actionable hint to common auth / not-found failures from the Foundry endpoint."""
     status = getattr(exc, "status_code", None)
@@ -119,7 +149,9 @@ def _raise_for_status(response: Any) -> None:
         error = _get(response, "error")
         code, message = _get(error, "code"), _get(error, "message", error)
         if _is_content_filter(code, message):
-            raise ContentFilterBlockedError(f"Blocked by the deployment content filter: {message}")
+            raise ContentFilterBlockedError(
+                f"Blocked by the deployment content filter ({_content_filter_summary(error)})"
+            )
         raise AgentInvocationError(f"Agent run failed: {message}")
     if status == "incomplete":
         details = _get(response, "incomplete_details")
@@ -269,7 +301,9 @@ class SupportAgentClient:
             )
         except APIError as exc:
             if _is_content_filter(getattr(exc, "code", None), str(exc)):
-                raise ContentFilterBlockedError(f"Blocked by the deployment content filter: {exc}") from exc
+                raise ContentFilterBlockedError(
+                    f"Blocked by the deployment content filter ({_content_filter_summary(exc)})"
+                ) from exc
             raise AgentInvocationError(f"Agent call failed: {_describe_api_error(exc)}") from exc
         except AzureError as exc:  # e.g. ClientAuthenticationError from the token provider
             raise AgentInvocationError(f"Agent call failed (Azure credential/transport): {exc}") from exc

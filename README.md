@@ -129,7 +129,8 @@ automated_customer_support_safety_agent/
 │   ├── ingest_policy.py          ← chunk → embed (text-embedding-3-small/-large) → vector/semantic index
 │   ├── provision_agent.py        ← create a new agent version with Search + OpenAPI tools
 │   ├── run_exam_checks.py        ← run tests/exam_cases.json against the live deployment
-│   └── evaluate_quality.py       ← groundedness / relevance judges + fabrication check on the replies
+│   ├── evaluate_quality.py       ← groundedness / relevance judges + fabrication check on the replies
+│   └── teardown.py               ← delete the agent (all versions) and the index; prints RG delete commands
 │
 └── tests/
     ├── exam_verification.md      ← strict AI-103 acceptance script (RAG, tools, safety, RBAC)
@@ -148,7 +149,7 @@ automated_customer_support_safety_agent/
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
-pytest                                   # 81 offline tests, no Azure resources required
+pytest                                   # 92 offline tests, no Azure resources required
 Copy-Item .env.example .env              # then follow DEPLOYMENT.md
 python -m scripts.ingest_policy
 python -m scripts.provision_agent
@@ -165,6 +166,7 @@ python -m scripts.run_exam_checks
 | `python -m scripts.run_exam_checks --category SAFETY` | Run one verification track |
 | `python -m scripts.evaluate_quality --offline` | Fabricated-fact check on the last `exam_report.json` (no Azure calls) |
 | `python -m scripts.evaluate_quality` | + groundedness and relevance AI judges (`pip install -r requirements-eval.txt`) |
+| `python -m scripts.teardown` / `--yes` | Show / delete the agent and the index, then print the resource-group delete commands |
 | `python -m scripts.run_exam_checks --only S1,S2,S3 --skip-input-gate` | Bypass the client gate to prove the Foundry guardrail (layer 1b) blocks attacks on its own |
 | `cd src; func start` | Run the order API locally on port 7071 |
 
