@@ -1,8 +1,8 @@
 -r requirements.txt
 -r src/requirements.txt
 pytest==9.1.1
-ruff==0.16.10
+ruff==0.17.2
 openapi-spec-validator==0.9.0
 mypy==2.4.0
 pyright==1.1.414
-complexipy==8.0.1
+complexipy==8.1.0
